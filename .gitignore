@@ -1,0 +1,37 @@
+# Nuxt dev/build outputs
+.output
+.data
+.nuxt
+.nitro
+.cache
+dist
+
+# Node dependencies
+node_modules
+
+# Logs
+logs
+*.log
+
+# Misc
+.DS_Store
+.fleet
+.idea
+
+# 参考实现与模型（体积大，本地准备，不入库）
+/reference/homr/
+/reference/artifacts/
+
+# prepare-assets.mjs 生成的链接
+/public/models
+/public/samples
+/public/ort
+/public/verovio
+
+# 参考实现自己的 ORT 链接（指向 node_modules）
+/reference/homr-web/public/ort
+
+# Local env files
+.env
+.env.*
+!.env.example

@@ -1,0 +1,11 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+/* 克制的拟物化：直角卡片与工具栏，纸张本身提供层次。 */
+:root {
+  --ui-radius: 0;
+}
+
+@theme static {
+  --font-sans: system-ui, -apple-system, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}

@@ -1,0 +1,36 @@
+{
+  "name": "noteflow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "assets": "node scripts/prepare-assets.mjs",
+    "build": "node scripts/prepare-assets.mjs && nuxt build",
+    "dev": "node scripts/prepare-assets.mjs && nuxt dev",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "lint": "eslint .",
+    "typecheck": "nuxt typecheck",
+    "check:recognition": "node scripts/check-recognition.mjs",
+    "check:score": "node scripts/check-score.mjs",
+    "check:tracker": "node scripts/check-tracker.mjs",
+    "check:practice": "node scripts/check-practice.mjs"
+  },
+  "dependencies": {
+    "@iconify-json/lucide": "^1.2.145",
+    "@iconify-json/simple-icons": "^1.2.100",
+    "@nuxt/ui": "^4.12.0",
+    "nuxt": "^4.6.2",
+    "onnxruntime-web": "1.30.0",
+    "pitchy": "^4.1.0",
+    "tailwindcss": "^4.3.3",
+    "verovio": "^6.3.0"
+  },
+  "devDependencies": {
+    "@nuxt/eslint": "^1.17.0",
+    "eslint": "^10.13.0",
+    "eslint-plugin-better-tailwindcss": "^4.9.1",
+    "typescript": "^6.0.3",
+    "vue-tsc": "^3.3.13"
+  },
+  "packageManager": "pnpm@12.14.0"
+}
