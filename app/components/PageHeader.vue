@@ -3,40 +3,68 @@
  * 所有页面的顶栏：固定高度、统一留白与标题排版。
  *
  * 左侧返回按钮的位置固定占位（没有返回时留空），标题不会因为页面层级不同
- * 而左右移动；右侧操作与第二行（翻页等）分别用默认插槽和 `sub` 插槽。
+ * 而左右移动；右侧操作、顶栏正中的内容与第二行附加内容分别用默认插槽、
+ * `center` 插槽与 `sub` 插槽。安装成桌面应用后，这一栏同时充当自定义标题栏：
+ * `data-app-titlebar` 让全局样式避让窗口按钮并允许拖动。
  */
 withDefaults(defineProps<{
   title: string
   back?: string
   backLabel?: string
+  /** 宽页面（曲谱演奏页）与正文共用更窄的左右留白。 */
+  wide?: boolean
 }>(), {
   back: undefined,
-  backLabel: '返回'
+  backLabel: '返回',
+  wide: false
 })
+
+const slots = useSlots()
+/** 有 `center` 插槽时改成三栏网格，让中间内容相对顶栏真正居中。 */
+const centered = computed(() => slots.center !== undefined)
 </script>
 
 <template>
-  <header class="sticky top-0 z-20 border-b border-default bg-default/95 backdrop-blur">
-    <div class="mx-auto flex h-12 max-w-2xl items-center gap-1 px-2">
-      <!-- 返回位固定 32px，有无返回按钮标题都从同一处开始。 -->
-      <div class="flex size-8 shrink-0 items-center justify-center">
-        <UButton
-          v-if="back"
-          :to="back"
-          icon="i-lucide-chevron-left"
-          color="neutral"
-          variant="ghost"
-          size="sm"
-          :aria-label="backLabel"
-        />
+  <header
+    class="sticky top-0 z-20 border-b border-default bg-default/95 backdrop-blur"
+    data-app-titlebar
+  >
+    <div
+      class="mx-auto h-12 items-center gap-1"
+      :class="[
+        wide ? 'max-w-3xl px-0.5 sm:max-w-4xl sm:px-2' : 'max-w-2xl px-4',
+        centered ? 'grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]' : 'flex'
+      ]"
+    >
+      <div class="flex min-w-0 flex-1 items-center gap-1">
+        <!-- 返回位固定 32px，有无返回按钮标题都从同一处开始。 -->
+        <div class="flex size-8 shrink-0 items-center justify-center">
+          <UButton
+            v-if="back"
+            :to="back"
+            icon="i-lucide-chevron-left"
+            color="neutral"
+            variant="ghost"
+            size="sm"
+            :aria-label="backLabel"
+          />
+        </div>
+        <h1
+          class="min-w-0 flex-1 truncate text-base font-medium"
+          data-test="page-title"
+        >
+          {{ title }}
+        </h1>
       </div>
-      <h1
-        class="min-w-0 flex-1 truncate text-base font-medium"
-        data-test="page-title"
+      <div
+        v-if="centered"
+        class="justify-self-center"
       >
-        {{ title }}
-      </h1>
-      <slot />
+        <slot name="center" />
+      </div>
+      <div class="flex shrink-0 items-center justify-end justify-self-end gap-1">
+        <slot />
+      </div>
     </div>
     <slot name="sub" />
   </header>

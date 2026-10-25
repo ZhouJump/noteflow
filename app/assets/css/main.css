@@ -9,3 +9,24 @@
 @theme static {
   --font-sans: system-ui, -apple-system, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
+
+/*
+ * 安装成桌面应用后使用自定义标题栏：系统窗口按钮画在页面顶部，顶栏按
+ * `titlebar-area-*` 留出它们占用的宽度，空白处可以拖动窗口。
+ * `-webkit-app-region` 留给尚未支持标准属性的 Chromium。
+ */
+@media (display-mode: window-controls-overlay) {
+  [data-app-titlebar] {
+    padding-left: env(titlebar-area-x, 0px);
+    padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+    /* 窗口控件比 3rem 高时把内容往下推，避免压到顶栏第一行。 */
+    padding-top: max(0px, calc(env(titlebar-area-height, 3rem) - 3rem));
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+
+  [data-app-titlebar] :is(a, button, input, textarea, select, [role='button'], [role='tab']) {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+}

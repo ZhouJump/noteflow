@@ -7,7 +7,7 @@ import { readMusicXmlSource, type ParsedMusicXml } from '~/lib/musicxml/document
  *
  * 手机上不放 XML 文本框或技术统计；解析失败时只说清楚原因。
  */
-useSeoMeta({ title: '导入 MusicXML · NoteFlow' })
+usePageSeo('导入 MusicXML · NoteFlow', '直接导入 .musicxml 或 .xml 文件，跳过识别，保存后即可演奏与评分。')
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const fileName = ref('')
@@ -17,6 +17,8 @@ const title = ref('')
 const composer = ref('')
 const error = ref<string | null>(null)
 const saving = ref(false)
+const saveOpen = ref(false)
+const saveError = ref<string | null>(null)
 
 function pickFile(): void {
   fileInput.value?.click()
@@ -48,7 +50,7 @@ async function onFile(event: Event): Promise<void> {
 async function save(): Promise<void> {
   if (parsed.value === null) return
   saving.value = true
-  error.value = null
+  saveError.value = null
   try {
     const response = await saveMusicXmlScore({
       fileName: fileName.value || 'import.musicxml',
@@ -58,10 +60,16 @@ async function save(): Promise<void> {
     })
     await navigateTo(`/scores/${response.scoreId}`)
   } catch (exception) {
-    error.value = describeStorageError(exception)
+    saveError.value = describeStorageError(exception)
   } finally {
     saving.value = false
   }
+}
+
+function openSave(): void {
+  if (parsed.value === null) return
+  saveError.value = null
+  saveOpen.value = true
 }
 </script>
 
@@ -112,31 +120,23 @@ async function save(): Promise<void> {
             <p class="mt-0.5 text-xs text-muted">
               {{ parsed.measureCount }} 小节 · {{ parsed.notes.length }} 个音符
             </p>
+            <p
+              v-if="composer"
+              class="mt-0.5 truncate text-xs text-muted"
+            >
+              {{ composer }}
+            </p>
           </div>
-          <UFormField label="标题">
-            <UInput
-              v-model="title"
-              class="w-full"
-              data-test="title-input"
-            />
-          </UFormField>
-          <UFormField label="作曲 / 编曲">
-            <UInput
-              v-model="composer"
-              class="w-full"
-              data-test="composer-input"
-            />
-          </UFormField>
         </section>
 
         <UButton
           block
           size="lg"
           icon="i-lucide-library-big"
-          label="保存到书架"
+          label="保存到谱架"
           :loading="saving"
           data-test="import-musicxml"
-          @click="save"
+          @click="openSave"
         />
         <UButton
           block
@@ -158,5 +158,60 @@ async function save(): Promise<void> {
         data-test="musicxml-error"
       />
     </div>
+
+    <UModal
+      v-model:open="saveOpen"
+      :dismissible="!saving"
+    >
+      <template #header>
+        <h2 class="text-base font-semibold">
+          保存到谱架
+        </h2>
+      </template>
+      <template #body>
+        <div class="grid gap-4">
+          <UFormField label="标题">
+            <UInput
+              v-model="title"
+              class="w-full"
+              data-test="title-input"
+            />
+          </UFormField>
+          <UFormField label="作曲 / 编曲">
+            <UInput
+              v-model="composer"
+              placeholder="可选"
+              class="w-full"
+              data-test="composer-input"
+            />
+          </UFormField>
+          <p
+            v-if="saveError"
+            class="text-sm text-error"
+            data-test="save-error"
+          >
+            {{ saveError }}
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton
+            color="neutral"
+            variant="ghost"
+            label="取消"
+            :disabled="saving"
+            data-test="save-cancel"
+            @click="saveOpen = false"
+          />
+          <UButton
+            label="保存"
+            :loading="saving"
+            data-test="import-musicxml-confirm"
+            @click="save"
+          />
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

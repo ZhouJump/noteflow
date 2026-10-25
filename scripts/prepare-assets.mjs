@@ -6,13 +6,15 @@
  * 准备内容：
  *   public/models/{segnet,encoder,decoder}.onnx.part-*  <- reference/homr 或构建时下载，10 MB 分片
  *   public/models/{segnet,encoder,decoder}.onnx.json    <- 分片清单
- *   public/samples                                      <- reference/samples/input（复制）
+ *   public/samples                                      <- reference/samples/input（逐个文件同步）
  *   public/ort/ort.wasm.js                              <- node_modules/onnxruntime-web/dist（API）
  *   public/ort/ort-wasm-simd-threaded.js                <- node_modules/onnxruntime-web/dist（胶水代码）
  *   public/ort/ort-wasm-simd-threaded.wasm.*            <- 由 wasm 切成的 10 MB 分片
  *   public/ort/ort-wasm-simd-threaded.wasm.json         <- 分片清单
  *   public/verovio/verovio-module.js                    <- node_modules/verovio/dist（复制）
  *   public/verovio/verovio.js                           <- node_modules/verovio/dist（复制）
+ *   public/pdf/pdf.min.js, pdf.worker.min.js            <- node_modules/pdfjs-dist/build（复制）
+ *   public/pdf/{cmaps,standard_fonts,wasm}              <- node_modules/pdfjs-dist（复制）
  *
  * 模块脚本一律落成 `.js`：EdgeOne 这类静态托管没给 `.mjs` 配 MIME，会以
  * application/octet-stream 返回，浏览器按模块脚本加载时直接拒绝。
@@ -37,7 +39,10 @@ const pub = path.join(root, 'public')
 const homr = path.join(root, 'reference/homr/homr')
 const ort = path.join(root, 'node_modules/onnxruntime-web/dist')
 const verovio = path.join(root, 'node_modules/verovio/dist')
+const pdfjs = path.join(root, 'node_modules/pdfjs-dist')
 const modelCache = path.join(root, '.cache/noteflow-models')
+/** 上一次同步到 public/samples 的文件清单，用来删掉来源里已经不存在的旧样例。 */
+const samplesState = path.join(root, '.cache/noteflow-assets/samples.json')
 /** 单个分片的上限，与 `scripts/check-bundle-size.mjs` 保持一致。 */
 const CHUNK = 10_000_000
 /** fp32 模型：与 reference/homr 在 CPU 上用的是同一组权重。 */
@@ -60,9 +65,14 @@ const models = [
 
 /** 小文件复制：文件按字节数、目录按相对路径逐个比较，内容没变就不重写。 */
 const copies = [
-  [path.join(root, 'reference/samples/input'), 'samples'],
   [path.join(verovio, 'verovio-module.mjs'), 'verovio/verovio-module.js'],
-  [path.join(verovio, 'verovio.mjs'), 'verovio/verovio.js']
+  [path.join(verovio, 'verovio.mjs'), 'verovio/verovio.js'],
+  // PDF.js 在主线程与 Worker 里各加载一个模块脚本，字体与中文 CMap 渲染矢量 PDF 时才用到。
+  [path.join(pdfjs, 'build/pdf.min.mjs'), 'pdf/pdf.min.js'],
+  [path.join(pdfjs, 'build/pdf.worker.min.mjs'), 'pdf/pdf.worker.min.js'],
+  [path.join(pdfjs, 'cmaps'), 'pdf/cmaps'],
+  [path.join(pdfjs, 'standard_fonts'), 'pdf/standard_fonts'],
+  [path.join(pdfjs, 'wasm'), 'pdf/wasm']
 ]
 
 const listFiles = directory => fs
@@ -95,6 +105,51 @@ function copyAsset(source, rel) {
   fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.cpSync(source, target, { recursive: true })
   console.log(`${rel} -> ${path.relative(root, source)}`)
+}
+
+/**
+ * 样例目录：只同步来自 `reference/samples/input` 的文件。
+ *
+ * `public/samples` 里还可能有用户自己放的素材（例如预置曲集的原始 PDF），
+ * 所以不能整目录替换：只更新来源里的文件，删掉上一次由本脚本复制、现在来源
+ * 里已经不存在的文件，其余内容原样保留。返回 false 表示来源目录不存在。
+ */
+function prepareSamples() {
+  const source = path.join(root, 'reference/samples/input')
+  const target = path.join(pub, 'samples')
+  if (!fs.existsSync(source)) {
+    console.log(`missing: ${path.relative(root, source)}`)
+    return false
+  }
+
+  const files = listFiles(source)
+  let managed = []
+  try {
+    managed = JSON.parse(fs.readFileSync(samplesState, 'utf8')).files ?? []
+  } catch {
+    // 首次运行或缓存损坏：以这次同步的结果作为清单。
+  }
+
+  for (const relative of files) {
+    const from = path.join(source, relative)
+    const to = path.join(target, relative)
+    if (fs.existsSync(to) && fs.statSync(to).isFile() && fs.statSync(to).size === fs.statSync(from).size) {
+      continue
+    }
+    fs.mkdirSync(path.dirname(to), { recursive: true })
+    fs.copyFileSync(from, to)
+    console.log(`samples/${relative} -> ${path.relative(root, from)}`)
+  }
+  for (const relative of managed) {
+    if (files.includes(relative)) continue
+    fs.rmSync(path.join(target, relative), { force: true })
+    console.log(`samples/${relative} (removed)`)
+  }
+
+  fs.mkdirSync(path.dirname(samplesState), { recursive: true })
+  fs.writeFileSync(samplesState, `${JSON.stringify({ files }, null, 2)}\n`)
+  console.log(`samples (${files.length} 个文件已同步)`)
+  return true
 }
 
 /** 找到模型源文件；本地没有就从 Release 下载并解压到缓存目录。 */
@@ -231,6 +286,7 @@ function prepareOrt() {
 
 fs.mkdirSync(pub, { recursive: true })
 const missing = []
+if (!prepareSamples()) missing.push('samples')
 for (const [source, rel] of copies) {
   if (!fs.existsSync(source)) {
     console.log(`missing: ${path.relative(root, source)}`)

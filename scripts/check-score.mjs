@@ -1,19 +1,26 @@
 /**
- * M5 验收：用真实 Chromium 走一遍「选两页图片 → 拖动排序 → 识别 → 保存到书架 → 翻页 →
- * 点选音符 → 页面图 → 导入 MusicXML」。
+ * M5 验收：用真实 Chromium 走一遍「选两页图片 → 拖动排序 → 识别 → 保存到谱架 →
+ * 纵向翻看 → 点选音符 → 侧栏控件 → 节拍器与批注 → 导入 MusicXML → 谱集整理 →
+ * 多页 PDF 导入」。
  *
  *   node scripts/check-score.mjs [--url http://127.0.0.1:3000]
  *                                [--image <第一页>] [--image2 <第二页>]
- *                                [--musicxml <基准>] [--out reference/artifacts/m5]
+ *                                [--musicxml <基准>] [--pdf <多页 PDF>]
+ *                                [--out reference/artifacts/m5]
  *
  * 先启动开发服务器（pnpm dev），再运行本脚本。脚本只验证真实运行：
  *   - 选页后仍能继续添加，长按拖动可以调整页面顺序；
  *   - 选中的两页按顺序识别完成，保存成同一份曲谱；
  *   - 每一页都有自己的 RecognitionRecord，第一页 MusicXML 与界面展示逐字节一致；
- *   - 曲谱页只显示页面图，可以在两页之间切换，切页后清空选中；
- *   - 点页面图上的音符能显示音高、时值；
- *   - 书架出现刚保存的曲谱；
- *   - MusicXML 导入走同一个曲谱页，没有页面图与翻页。
+ *   - 曲谱页两页纵向排开，没有翻页按钮与页码，切页后音符编号是全局的；
+ *   - 点页面图上的音符能显示音高、时值，SVG 选中圈落在符头上；
+ *   - 节拍器、声部、跟随与批注控件分居乐谱两侧；
+ *   - BPM 与批注写入 IndexedDB，刷新后恢复；
+ *   - 谱架出现刚保存的曲谱；
+ *   - MusicXML 导入走同一个曲谱页，没有页面图与纵向页容器；
+ *   - 长按拖动可把两首独立曲谱组成谱集，拖到谱集卡可加入，删除谱集后曲谱回到谱架；
+ *   - 多页 PDF 逐页渲染成缩略图，识别后保存成同一份两页曲谱；
+ *   - 首次打开自动安装「小提琴经典曲集」，曲名与作曲家分开保存。
  */
 
 import { spawn } from 'node:child_process'
@@ -35,6 +42,7 @@ const page = path.basename(firstImage, path.extname(firstImage))
 const musicxmlPath = path.resolve(
   flag('--musicxml', path.join(root, 'reference/artifacts/browser', page, `${page}.musicxml`))
 )
+const pdfPath = path.resolve(flag('--pdf', path.join(root, 'reference/samples/input/永远同在1.pdf')))
 const base = flag('--url', 'http://127.0.0.1:3000').replace(/\/$/, '')
 const outDir = path.resolve(flag('--out', path.join(root, 'reference/artifacts/m5')), page)
 const BROWSER = process.env.BROWSER ?? '/usr/bin/microsoft-edge'
@@ -44,6 +52,7 @@ const TIMEOUT = Number(process.env.TIMEOUT ?? 20 * 60_000)
 if (!fs.existsSync(firstImage)) throw new Error(`图片不存在：${firstImage}`)
 if (!fs.existsSync(secondImage)) throw new Error(`第二页图片不存在：${secondImage}`)
 if (!fs.existsSync(musicxmlPath)) throw new Error(`MusicXML 不存在：${musicxmlPath}`)
+if (!fs.existsSync(pdfPath)) throw new Error(`PDF 不存在：${pdfPath}`)
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -63,6 +72,31 @@ async function waitFor(fn, timeout, label) {
 }
 
 const profile = fs.mkdtempSync('/tmp/noteflow-m5-')
+
+/** 自动滚动验收用静音“麦克风”，让练习停在当前目标而不是被假音推进。 */
+function writeSilence(file) {
+  const sampleRate = 48_000
+  const seconds = 60
+  const data = Buffer.alloc(sampleRate * seconds * 2)
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + data.length, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(sampleRate, 24)
+  header.writeUInt32LE(sampleRate * 2, 28)
+  header.writeUInt16LE(2, 32)
+  header.writeUInt16LE(16, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(data.length, 40)
+  fs.writeFileSync(file, Buffer.concat([header, data]))
+}
+const silencePath = path.join(profile, 'silence.wav')
+writeSilence(silencePath)
+
 const browser = spawn(
   BROWSER,
   [
@@ -75,14 +109,23 @@ const browser = spawn(
     '--disable-dev-shm-usage',
     '--disable-background-timer-throttling',
     '--disable-renderer-backgrounding',
+    '--autoplay-policy=no-user-gesture-required',
+    '--use-fake-ui-for-media-stream',
+    '--use-fake-device-for-media-stream',
+    `--use-file-for-fake-audio-capture=${silencePath}`,
     'about:blank'
   ],
   { stdio: 'ignore' }
 )
 // 临时 profile 有几百 MB：退出时连同浏览器一起清理，避免 /tmp 被历次验收堆满。
+// 浏览器刚被 SIGKILL 时目录里可能还在写入，删除要带重试且不能把退出钩子拖崩。
 process.on('exit', () => {
   browser.kill('SIGKILL')
-  fs.rmSync(profile, { recursive: true, force: true })
+  try {
+    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  } catch {
+    // 剩下一点临时文件交给系统回收，不影响验收结果。
+  }
 })
 
 await waitFor(async () => {
@@ -207,6 +250,72 @@ async function dragPage(from, to) {
   await sleep(150)
 }
 
+/** 元素中心点；先滚到视口中央，避免卡片在屏幕外。 */
+function centerOf(selector) {
+  return evaluate(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)})
+    if (!element) return null
+    element.scrollIntoView({ block: 'center' })
+    const rect = element.getBoundingClientRect()
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+  })()`)
+}
+
+/** 长按 500ms 后拖到目标点；谱架与谱集页的整理手势都走这一条路径。
+ *  `probe` 在进入拖拽、尚未松手时执行，用来检查拖拽中的 ghost。 */
+async function longPressDrag(start, end, probe) {
+  if (start === null || end === null) throw new Error('拖动起点或终点不存在')
+  await send('Input.dispatchMouseEvent', {
+    type: 'mousePressed', x: start.x, y: start.y, button: 'left', buttons: 1, clickCount: 1
+  })
+  await sleep(500)
+  if (probe !== undefined) await probe()
+  for (let step = 1; step <= 8; step += 1) {
+    await send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: start.x + ((end.x - start.x) * step) / 8,
+      y: start.y + ((end.y - start.y) * step) / 8,
+      button: 'left',
+      buttons: 1
+    })
+    await sleep(40)
+  }
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased', x: end.x, y: end.y, button: 'left', buttons: 1, clickCount: 1
+  })
+  await sleep(400)
+}
+
+/** 长按谱集页的曲谱，等移出区域出现后拖进去。 */
+async function dragToRemoveZone(selector) {
+  const start = await centerOf(selector)
+  if (start === null) throw new Error(`曲谱卡片不存在：${selector}`)
+  await send('Input.dispatchMouseEvent', {
+    type: 'mousePressed', x: start.x, y: start.y, button: 'left', buttons: 1, clickCount: 1
+  })
+  await sleep(500)
+  const zone = await waitFor(() => evaluate(`(() => {
+    const element = document.querySelector('[data-test="collection-remove-zone"]')
+    if (!element) return null
+    const rect = element.getBoundingClientRect()
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+  })()`), 5_000, 'remove zone')
+  for (let step = 1; step <= 8; step += 1) {
+    await send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: start.x + ((zone.x - start.x) * step) / 8,
+      y: start.y + ((zone.y - start.y) * step) / 8,
+      button: 'left',
+      buttons: 1
+    })
+    await sleep(40)
+  }
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased', x: zone.x, y: zone.y, button: 'left', buttons: 1, clickCount: 1
+  })
+  await sleep(400)
+}
+
 /** 打开页面并等 Vue 挂载。整页导航会销毁执行上下文，因此这里不做失败重试之外的假设。 */
 async function open(target) {
   await send('Page.navigate', { url: `${base}${target}` })
@@ -215,26 +324,26 @@ async function open(target) {
   await sleep(300)
 }
 
-/** 在页面图上按侧车坐标点一下，选中最接近的音符。 */
-async function clickPagePoint(point) {
+/** 在指定页的页面图上按侧车坐标点一下，选中最接近的音符。 */
+async function clickPagePoint(point, pageIndex = 0) {
   const located = await evaluate(`(() => {
-    const element = document.querySelector('[data-test="page-image"]')
+    const element = document.querySelectorAll('[data-test="page-image"]')[${pageIndex}]
     if (!element) return false
-    const rect = element.getBoundingClientRect()
-    const x = rect.left + (${point.x} / element.width) * rect.width
-    const y = rect.top + (${point.y} / element.height) * rect.height
-    window.scrollBy(0, y - window.innerHeight / 2)
+    element.scrollIntoView({ block: 'center' })
     return true
   })()`)
   if (!located) return false
-  await sleep(250)
+  await sleep(350)
   const position = await evaluate(`(() => {
-    const element = document.querySelector('[data-test="page-image"]')
+    const element = document.querySelectorAll('[data-test="page-image"]')[${pageIndex}]
     if (!element) return null
+    const pageWidth = Number(element.dataset.pageWidth)
     const rect = element.getBoundingClientRect()
+    if (!pageWidth || rect.width === 0) return null
+    const scale = rect.width / pageWidth
     return {
-      x: rect.left + (${point.x} / element.width) * rect.width,
-      y: rect.top + (${point.y} / element.height) * rect.height
+      x: rect.left + ${point.x} * scale,
+      y: rect.top + ${point.y} * scale
     }
   })()`)
   if (position === null) return false
@@ -247,24 +356,59 @@ async function clickPagePoint(point) {
   return true
 }
 
-/** 选中后圈画在定位点上：采样半径上的像素，确认琥珀色圆环确实落在符头周围。 */
-function amberRingAt(point) {
+/** 选中后 SVG 圆环的页面坐标；用来确认它确实落在符头定位点上。 */
+function selectionRing(pageIndex) {
   return evaluate(`(() => {
-    const element = document.querySelector('[data-test="page-image"]')
-    if (!element) return null
-    const context = element.getContext('2d')
-    const scale = element.width / 1200
-    const radius = 14 * scale
-    let hits = 0
-    for (let step = 0; step < 8; step += 1) {
-      const angle = (step * Math.PI) / 4
-      const x = Math.round(${point.x} + Math.cos(angle) * radius)
-      const y = Math.round(${point.y} + Math.sin(angle) * radius)
-      const [red, green, blue] = context.getImageData(x, y, 1, 1).data
-      if (red > 110 && red < 235 && green > 45 && green < 145 && blue < 90) hits += 1
-    }
-    return hits
+    const page = document.querySelectorAll('[data-page-index]')[${pageIndex}]
+    const ring = page?.querySelector('[data-test="selection-ring"]')
+    if (!ring) return null
+    return { cx: Number(ring.getAttribute('cx')), cy: Number(ring.getAttribute('cy')) }
   })()`)
+}
+
+/** 页面图缩略显示尺寸 ≠ 页面像素：用 data-page-width 换算点击坐标。 */
+function pageImageSize(index) {
+  return evaluate(`(() => {
+    const element = document.querySelectorAll('[data-test="page-image"]')[${index}]
+    return element && element.naturalWidth > 0
+      ? { width: element.naturalWidth, height: element.naturalHeight }
+      : null
+  })()`)
+}
+
+/** 滚动到某一页中间，供批注拖拽使用。 */
+async function centerPage(index) {
+  await evaluate(`document.querySelectorAll('[data-page-index]')[${index}]?.scrollIntoView({ block: 'center' })`)
+  await sleep(400)
+}
+
+/** 在页面上用指针拖一条线；坐标是页面容器的 0–1 比例。 */
+async function drawStroke(pageIndex, points) {
+  const box = await evaluate(`(() => {
+    const page = document.querySelectorAll('[data-page-index]')[${pageIndex}]
+    const layer = page?.querySelector('[data-test="annotation-layer"]')
+    if (!layer) return null
+    const rect = layer.getBoundingClientRect()
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+  })()`)
+  if (box === null) return false
+  const at = ([x, y]) => ({ x: box.left + box.width * x, y: box.top + box.height * y })
+  const first = at(points[0])
+  await send('Input.dispatchMouseEvent', {
+    type: 'mousePressed', x: first.x, y: first.y, button: 'left', buttons: 1, clickCount: 1
+  })
+  for (const point of points.slice(1)) {
+    const position = at(point)
+    await send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: position.x, y: position.y, button: 'left', buttons: 1
+    })
+    await sleep(30)
+  }
+  const last = at(points[points.length - 1])
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased', x: last.x, y: last.y, button: 'left', buttons: 0, clickCount: 1
+  })
+  return true
 }
 
 /** 从 IndexedDB 读回一份曲谱的页面与识别记录（含第一个音落在页面上的坐标）。 */
@@ -280,10 +424,11 @@ function readScore(scoreId) {
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })
-    const [scores, pages, recognitions] = await Promise.all([
+    const [scores, pages, recognitions, annotations] = await Promise.all([
       readAll('scores'),
       readAll('pages'),
-      readAll('recognitions')
+      readAll('recognitions'),
+      readAll('annotations')
     ])
     database.close()
     const id = ${JSON.stringify(scoreId)}
@@ -337,10 +482,19 @@ function readScore(scoreId) {
       })
     return {
       score: score
-        ? { pageCount: score.pageCount, noteCount: score.noteCount, hasThumbnail: score.thumbnailAssetId !== null }
+        ? {
+            pageCount: score.pageCount,
+            noteCount: score.noteCount,
+            hasThumbnail: score.thumbnailAssetId !== null,
+            collectionId: score.collectionId ?? null,
+            collectionOrder: score.collectionOrder ?? null
+          }
         : null,
       pages: scorePages,
-      recognitions: records
+      recognitions: records,
+      annotations: annotations
+        .filter(entry => entry.scoreId === id)
+        .map(entry => ({ pageKey: entry.pageKey, strokes: entry.strokes.length }))
     }
   })()`)
 }
@@ -350,9 +504,60 @@ async function screenshot(name) {
   fs.writeFileSync(path.join(outDir, name), Buffer.from(shot.data, 'base64'))
 }
 
+/** 直接读谱架相关的两个 store，断言拖拽真正写进了 IndexedDB。 */
+function readLibrary() {
+  return evaluate(`(async () => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('noteflow')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const readAll = store => new Promise((resolve, reject) => {
+      const request = database.transaction(store, 'readonly').objectStore(store).getAll()
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const [scores, collections] = await Promise.all([readAll('scores'), readAll('collections')])
+    // 封面图只统计数量与归属，不把 Blob 带回 Node。
+    const covers = await new Promise((resolve, reject) => {
+      const request = database.transaction('assets', 'readonly').objectStore('assets').openCursor()
+      const found = []
+      request.onsuccess = () => {
+        const cursor = request.result
+        if (cursor) {
+          if (cursor.value.kind === 'cover') found.push({ id: cursor.value.id, scoreId: cursor.value.scoreId ?? null })
+          cursor.continue()
+          return
+        }
+        resolve(found)
+      }
+      request.onerror = () => reject(request.error)
+    })
+    database.close()
+    return {
+      covers,
+      scores: scores.map(entry => ({
+        id: entry.id,
+        title: entry.title,
+        composer: entry.composer ?? '',
+        collectionId: entry.collectionId ?? null,
+        collectionOrder: entry.collectionOrder ?? null
+      })),
+      collections: collections.map(entry => ({
+        id: entry.id,
+        title: entry.title,
+        coverAssetId: entry.coverAssetId ?? null,
+        sortOrder: entry.sortOrder,
+        updatedAt: entry.updatedAt
+      }))
+    }
+  })()`)
+}
+
 await send('Runtime.enable')
 await send('DOM.enable')
 await send('Page.enable')
+await send('Browser.grantPermissions', { origin: base, permissions: ['audioCapture'] })
 // 应用以手机为主：整轮验收都在手机视口下跑，截图也按手机宽度输出。
 await send('Emulation.setDeviceMetricsOverride', {
   width: 390, height: 844, deviceScaleFactor: 1, mobile: true
@@ -367,6 +572,15 @@ await send('Page.addScriptToEvaluateOnNewDocument', {
     style.textContent = 'nuxt-devtools, #nuxt-devtools-container { display: none !important; }'
     document.head.append(style)
   }, { once: true })`
+})
+// 干净库的断言不能被自带曲集干扰：每个新文档先写入跳过标记。验收末尾会移除它，
+// 再验证首次安装自带曲集的流程。
+const presetSkip = await send('Page.addScriptToEvaluateOnNewDocument', {
+  source: `try { localStorage.setItem('noteflow:preset:off', '1') } catch {}`
+})
+// 安装提示会盖在页面顶部，验收不需要它。
+await send('Page.addScriptToEvaluateOnNewDocument', {
+  source: `try { localStorage.setItem('noteflow:install:off', '1') } catch {}`
 })
 fs.mkdirSync(outDir, { recursive: true })
 
@@ -385,6 +599,7 @@ try {
   console.log(`images ${firstImage}`)
   console.log(`        ${secondImage}`)
   console.log(`musicxml ${musicxmlPath}`)
+  console.log(`pdf ${pdfPath}`)
 
   // ---- 多页识别 ----
   await open('/import/images')
@@ -437,13 +652,19 @@ try {
   const firstXml = await evaluate('document.querySelector(\'[data-test="musicxml"]\')?.textContent ?? \'\'')
   check('识别返回 MusicXML', firstXml.length > 0, `${firstXml.length} 字符`)
 
-  // ---- 保存到书架 ----
+  // ---- 保存到谱架 ----
   await waitFor(
     () => evaluate('Boolean(document.querySelector(\'[data-test="save-score"]\'))'),
     30_000,
     'save button'
   )
   await click('[data-test="save-score"]')
+  await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="save-score-confirm"]\'))'),
+    10_000,
+    'save dialog'
+  )
+  await click('[data-test="save-score-confirm"]')
 
   const scorePath = await waitFor(
     () => evaluate('location.pathname').then(value => (value.startsWith('/scores/') ? value : '')),
@@ -458,26 +679,88 @@ try {
     return value || ''
   }, 60_000, 'score title')
   check('曲谱标题非空', title.length > 0, title)
+  const scoreSeoTitle = await waitFor(async () => {
+    const value = await evaluate('document.title')
+    return value.includes(title) ? value : ''
+  }, 10_000, 'score seo title')
+  check('曲谱页标题带曲名', scoreSeoTitle === `${title} · NoteFlow`, scoreSeoTitle)
 
-  // ---- 第一页：只有页面图，没有 Verovio 视图 ----
-  const canvas1 = await waitFor(async () => {
-    const size = await evaluate(`(() => {
-      const element = document.querySelector('[data-test="page-image"]')
-      return element ? { width: element.width, height: element.height } : null
-    })()`)
-    return size && size.width > 0 && size.height > 0 ? size : null
-  }, 60_000, 'page 1 image')
+  // ---- 曲谱页：两页纵向排开，控件在两侧 ----
+  const image1 = await waitFor(() => pageImageSize(0), 60_000, 'page 1 image')
   check(
     '图片曲谱只显示页面图',
-    canvas1.width > 0 && (await count('[data-test="score-surface"]')) === 0,
-    `${canvas1.width}×${canvas1.height}`
+    image1.width > 0 && (await count('[data-test="score-surface"]')) === 0,
+    `${image1.width}×${image1.height}`
   )
 
-  const indicator1 = await waitFor(async () => {
-    const value = await text('[data-test="page-indicator"]')
-    return value.includes('1 / 2') ? value : ''
-  }, 30_000, 'page indicator 1')
-  check('多页页码正确', indicator1.length > 0, indicator1)
+  const layout = await waitFor(async () => {
+    const pages = await count('[data-page-index]')
+    if (pages !== 2) return null
+    return evaluate(`(() => {
+      const pages = [...document.querySelectorAll('[data-page-index]')]
+      if (pages.length !== 2) return null
+      const first = pages[0].getBoundingClientRect()
+      const second = pages[1].getBoundingClientRect()
+      return {
+        count: pages.length,
+        firstTop: Math.round(first.top + window.scrollY),
+        firstBottom: Math.round(first.bottom + window.scrollY),
+        secondTop: Math.round(second.top + window.scrollY)
+      }
+    })()`)
+  }, 30_000, 'vertical pages')
+  check(
+    '两页纵向排开',
+    layout.count === 2 && layout.secondTop >= layout.firstBottom,
+    `第一页 ${layout.firstTop}–${layout.firstBottom}，第二页从 ${layout.secondTop} 开始`
+  )
+
+  const noPaging = await evaluate(
+    '!document.querySelector(\'[data-test="page-indicator"]\')'
+    + ' && !document.querySelector(\'[data-test="page-prev"]\')'
+    + ' && !document.querySelector(\'[data-test="page-next"]\')'
+  )
+  check('不再有翻页按钮与页码', noPaging === true)
+
+  const rails = await evaluate(`(() => {
+    const left = document.querySelector('[aria-label="节拍器与声部"]')
+    const right = document.querySelector('[aria-label="演奏控制与批注"]')
+    const main = document.querySelector('main')
+    if (!left || !right || !main) return null
+    const l = left.getBoundingClientRect()
+    const m = main.getBoundingClientRect()
+    const r = right.getBoundingClientRect()
+    return { leftRight: l.right, mainLeft: m.left, mainRight: m.right, rightLeft: r.left }
+  })()`)
+  check(
+    '节拍器与演奏控件分居乐谱两侧',
+    rails !== null && rails.leftRight <= rails.mainLeft + 2 && rails.mainRight <= rails.rightLeft + 2,
+    rails === null ? '侧栏不存在' : `${Math.round(rails.leftRight)} ≤ ${Math.round(rails.mainLeft)} / ${Math.round(rails.mainRight)} ≤ ${Math.round(rails.rightLeft)}`
+  )
+  const tabBox = await evaluate(`(() => {
+    const header = document.querySelector('header')
+    const tab = document.querySelector('[role="tablist"][aria-label="演奏模式"]')
+    if (!header || !tab) return null
+    const h = header.getBoundingClientRect()
+    const t = tab.getBoundingClientRect()
+    return {
+      inHeader: header.contains(tab),
+      offset: Math.abs((t.left + t.right) / 2 - (h.left + h.right) / 2),
+      width: t.width
+    }
+  })()`)
+  check(
+    '跟随/评分切换居中放在顶栏且保持紧凑',
+    tabBox !== null && tabBox.inHeader && tabBox.offset <= 1 && tabBox.width <= 120,
+    tabBox === null ? '找不到模式切换' : `偏移 ${tabBox.offset.toFixed(1)}px，宽 ${Math.round(tabBox.width)}px`
+  )
+  check('节拍器默认 80 BPM', (await text('[data-test="bpm-value"]')) === '80')
+  const bpmTrigger = await evaluate(`(() => {
+    const value = document.querySelector('[data-test="bpm-value"]')
+    const button = value?.closest('button')
+    return button ? button.textContent.replace(/\\s+/g, '') : null
+  })()`)
+  check('BPM 数字与文案在同一个触发按钮里', bpmTrigger === '80BPM', bpmTrigger)
   await screenshot('page-1.png')
 
   let stored = await waitFor(async () => {
@@ -486,10 +769,11 @@ try {
   }, 30_000, 'stored score')
   const firstRecord = stored.recognitions.find(entry => entry.pageId === stored.pages[0].id)
   const firstSnapped = firstRecord?.snapped ?? []
+  const firstNoteCount = (firstRecord?.musicXml.match(/<note[\s>]/g) ?? []).length
   const targetIndex = Math.min(5, firstSnapped.length - 1)
   const firstPoint = firstSnapped[targetIndex] ?? null
   check('侧车给出音符定位', firstPoint !== null, `${targetIndex} → ${JSON.stringify(firstPoint)}`)
-  const clicked = firstPoint !== null && await clickPagePoint(firstPoint)
+  const clicked = firstPoint !== null && await clickPagePoint(firstPoint, 0)
   check('点击页面图上的音符', clicked === true, `第 ${targetIndex + 1} 音`)
 
   const noteNumber = await waitFor(async () => {
@@ -503,47 +787,44 @@ try {
     noteSummary.length > 0 && noteDuration.length > 0,
     `${noteNumber} · ${noteSummary} · ${noteDuration}`
   )
-  const ring = firstPoint === null ? 0 : await amberRingAt(firstPoint)
-  check('选中圈落在音符上', typeof ring === 'number' && ring >= 4, `${ring} / 8 个采样点在圆环上`)
+  const ring = firstPoint === null ? null : await selectionRing(0)
+  const ringOffset = ring === null || firstPoint === null
+    ? null
+    : Math.hypot(ring.cx - firstPoint.x, ring.cy - firstPoint.y)
+  check(
+    '选中圈落在音符上',
+    ringOffset !== null && ringOffset <= 1,
+    ringOffset === null ? '没有圆环' : `偏差 ${ringOffset.toFixed(2)}px`
+  )
 
-  // ---- 第二页 ----
-  await click('[data-test="page-next"]')
-  const indicator2 = await waitFor(async () => {
-    const value = await text('[data-test="page-indicator"]')
-    return value.includes('2 / 2') ? value : ''
-  }, 30_000, 'page indicator 2')
-  check('可以切到第二页', indicator2.length > 0, indicator2)
-
-  const selectionCleared = await evaluate('!document.querySelector(\'[data-test="note-inspector"]\')')
-  check('翻页后清除选中', selectionCleared === true)
-
+  // ---- 第二页：直接往下点，选中编号接在第一页之后 ----
   const secondRecord = stored.recognitions.find(entry => entry.pageId === stored.pages[1].id)
   const secondPage = secondRecord?.page ?? null
-  const canvas2 = await waitFor(async () => {
-    const size = await evaluate(`(() => {
-      const element = document.querySelector('[data-test="page-image"]')
-      return element ? { width: element.width, height: element.height } : null
-    })()`)
-    return size && size.width > 0 && size.height > 0 ? size : null
-  }, 60_000, 'page 2 image')
+  const image2 = await waitFor(() => pageImageSize(1), 60_000, 'page 2 image')
   check(
-    '第二页换成自己的页面图',
-    secondPage !== null && canvas2.width === secondPage.width && canvas2.height === secondPage.height,
-    `${canvas2.width}×${canvas2.height}`
+    '第二页有自己的页面图',
+    secondPage !== null && image2.width === secondPage.width && image2.height === secondPage.height,
+    `${image2.width}×${image2.height}`
   )
 
   const secondSnapped = secondRecord?.snapped ?? []
   const secondIndex = Math.min(2, secondSnapped.length - 1)
   const secondPoint = secondSnapped[secondIndex] ?? null
-  const clicked2 = secondPoint !== null && await clickPagePoint(secondPoint)
+  const clicked2 = secondPoint !== null && await clickPagePoint(secondPoint, 1)
   check('第二页音符可选中', clicked2 === true, `第 ${secondIndex + 1} 音`)
-  const summary2 = await waitFor(() => text('[data-test="note-summary"]'), 30_000, 'page 2 note')
-  const number2 = await text('[data-test="note-number"]')
+  const globalIndex = firstNoteCount + secondIndex
+  const number2 = await waitFor(async () => {
+    const value = await text('[data-test="note-number"]')
+    return value.startsWith(`第 ${globalIndex + 1} `) ? value : ''
+  }, 30_000, 'page 2 note')
+  const summary2 = await text('[data-test="note-summary"]')
+  const duration2 = await text('[data-test="note-duration"]')
   check(
-    '第二页显示音高与时值',
-    summary2.length > 0 && number2.startsWith(`第 ${secondIndex + 1} `),
+    '第二页用全局音符编号',
+    summary2.length > 0 && number2.length > 0,
     `${number2} · ${summary2}`
   )
+  check('多页时标出所在页', duration2.includes('第 2 页'), duration2)
   await screenshot('page-2-image.png')
 
   // ---- 持久化 ----
@@ -558,17 +839,238 @@ try {
     firstRecord !== undefined && firstRecord.musicXml === firstXml,
     `${firstRecord?.noteSymbols ?? 0} 个音符符号`
   )
-  const firstNoteCount = (firstRecord?.musicXml.match(/<note[\s>]/g) ?? []).length
   check('第一页侧车覆盖全部 note', firstRecord?.noteSymbols === firstNoteCount, `${firstRecord?.noteSymbols} / ${firstNoteCount}`)
 
-  // ---- 书架 ----
+  // ---- 侧栏：节拍器、BPM 持久化 ----
+  await click('[data-test="metronome-toggle"]')
+  const metronomeOn = await waitFor(
+    () => evaluate('document.querySelector(\'[data-test="metronome-toggle"]\')?.getAttribute(\'aria-pressed\') === \'true\''),
+    5_000,
+    'metronome on'
+  )
+  check('可以打开节拍器', metronomeOn === true)
+
+  await click('[data-test="bpm-value"]')
+  await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="bpm-input"]\'))'),
+    5_000,
+    'bpm input'
+  )
+  await evaluate('document.querySelector(\'[data-test="bpm-input"]\').select()')
+  await send('Input.insertText', { text: '96' })
+  await click('[data-test="bpm-confirm"]')
+  const bpmTyped = await waitFor(async () => {
+    const value = await text('[data-test="bpm-value"]')
+    return value === '96' ? value : ''
+  }, 5_000, 'bpm typed')
+  check('BPM 对话框可以输入', bpmTyped === '96', bpmTyped)
+
+  await click('[data-test="bpm-up"]')
+  const bpmUp = await waitFor(async () => {
+    const value = await text('[data-test="bpm-value"]')
+    return value === '101' ? value : ''
+  }, 5_000, 'bpm up')
+  check('BPM 可以调整', bpmUp === '101', bpmUp)
+  await click('[data-test="metronome-toggle"]')
+
+  await click('[data-test="rhythm-select"]')
+  await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="rhythm-option-3-4"]\'))'),
+    5_000,
+    'rhythm dialog'
+  )
+  await click('[data-test="rhythm-option-3-4"]')
+  const rhythm3 = await waitFor(async () => {
+    const value = await text('[data-test="rhythm-select"]')
+    return value === '3/4' ? value : ''
+  }, 5_000, 'rhythm 3/4')
+  check('节奏型对话框可以切到 3/4', rhythm3 === '3/4', rhythm3)
+  check('三四拍显示三个拍点', (await count('[data-test="beat-dot"]')) === 3)
+
+  await click('[data-test="rhythm-select"]')
+  await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="rhythm-option-4-4"]\'))'),
+    5_000,
+    'rhythm dialog again'
+  )
+  await click('[data-test="rhythm-option-4-4"]')
+  const rhythm = await waitFor(async () => {
+    const value = await text('[data-test="rhythm-select"]')
+    return value === '4/4' ? value : ''
+  }, 5_000, 'rhythm switched')
+  check('节拍器可以切换到 4/4', rhythm === '4/4', rhythm)
+  check('四四拍显示四个拍点', (await count('[data-test="beat-dot"]')) === 4)
+  const dotRows = await evaluate(`(() => {
+    const aside = document.querySelector('[aria-label="节拍器与声部"]')
+    const dots = [...document.querySelectorAll('[data-test="beat-dot"]')]
+    if (!aside || dots.length === 0) return null
+    const box = aside.getBoundingClientRect()
+    const rects = dots.map(dot => dot.getBoundingClientRect())
+    return {
+      rows: new Set(rects.map(rect => Math.round(rect.top))).size,
+      inside: rects.every(rect => rect.left >= box.left - 0.5 && rect.right <= box.right + 0.5)
+    }
+  })()`)
+  check(
+    '拍点保持单行且不超出侧栏',
+    dotRows !== null && dotRows.rows === 1 && dotRows.inside,
+    dotRows === null ? '找不到拍点' : `${dotRows.rows} 行${dotRows.inside ? '' : '，超出侧栏'}`
+  )
+
+  await open(`/scores/${scoreId}`)
+  const bpmRestored = await waitFor(async () => {
+    const value = await text('[data-test="bpm-value"]')
+    return value === '101' ? value : ''
+  }, 30_000, 'bpm persisted')
+  check('BPM 按曲谱保存', bpmRestored === '101', bpmRestored)
+  const rhythmRestored = await waitFor(async () => {
+    const value = await text('[data-test="rhythm-select"]')
+    return value === '4/4' ? value : ''
+  }, 30_000, 'rhythm persisted')
+  check('节奏型按曲谱保存', rhythmRestored === '4/4', rhythmRestored)
+
+  // ---- 批注：画笔、持久化、撤销、清空 ----
+  await waitFor(() => pageImageSize(0), 60_000, 'page image reloaded')
+  const strokeCount = () => count('[data-page-index] [data-test="annotation-layer"] path')
+
+  await click('[data-test="pen-toggle"]')
+  await centerPage(1)
+  const drewFirst = await drawStroke(1, [[0.18, 0.22], [0.24, 0.26], [0.3, 0.3], [0.36, 0.34]])
+  const drawn = await waitFor(async () => {
+    const value = await strokeCount()
+    return value >= 1 ? value : null
+  }, 10_000, 'annotation stroke')
+  check('可以使用画笔批注', drewFirst === true && drawn >= 1, `${drawn} 条笔画`)
+  const ink = await evaluate(`(() => {
+    const path = document.querySelector('[data-page-index] [data-test="annotation-layer"] path')
+    return path ? { fill: path.getAttribute('fill'), stroke: path.getAttribute('stroke') } : null
+  })()`)
+  check('批注使用黑色细笔画', ink?.fill === '#111111' && ink?.stroke === 'none', JSON.stringify(ink))
+
+  const storedStrokes = await waitFor(async () => {
+    const record = await readScore(scoreId)
+    const total = record.annotations.reduce((sum, entry) => sum + entry.strokes, 0)
+    return total >= 1 ? total : null
+  }, 10_000, 'annotation stored')
+  check('批注写入 IndexedDB', storedStrokes >= 1, `${storedStrokes} 条`)
+
+  await open(`/scores/${scoreId}`)
+  const restoredStrokes = await waitFor(async () => {
+    const value = await strokeCount()
+    return value >= 1 ? value : null
+  }, 30_000, 'annotation restored')
+  check('刷新后批注恢复', restoredStrokes >= 1, `${restoredStrokes} 条笔画`)
+  await screenshot('annotations.png')
+
+  await click('[data-test="pen-toggle"]')
+  await centerPage(1)
+  await drawStroke(1, [[0.5, 0.2], [0.55, 0.26], [0.6, 0.32]])
+  const twoStrokes = await waitFor(async () => {
+    const value = await strokeCount()
+    return value >= 2 ? value : null
+  }, 10_000, 'second stroke')
+  check('可以继续添加批注', twoStrokes >= 2, `${twoStrokes} 条笔画`)
+
+  await click('[data-test="undo-annotation"]')
+  const undone = await waitFor(async () => {
+    const value = await strokeCount()
+    return value === 1 ? value : null
+  }, 10_000, 'annotation undone')
+  check('撤销上一条批注', undone === 1, `${undone} 条笔画`)
+
+  await click('[data-test="eraser-toggle"]')
+  await centerPage(1)
+  const beforeErase = await evaluate(
+    'document.querySelector(\'[data-page-index] [data-test="annotation-layer"] path\')?.getAttribute(\'d\') ?? \'\''
+  )
+  await drawStroke(1, [[0.28, 0.18], [0.28, 0.24], [0.28, 0.3], [0.28, 0.38]])
+  const erased = await waitFor(async () => {
+    const value = await evaluate(
+      'document.querySelector(\'[data-page-index] [data-test="annotation-layer"] path\')?.getAttribute(\'d\') ?? \'\''
+    )
+    return value !== '' && value !== beforeErase ? { value, strokes: await strokeCount() } : null
+  }, 10_000, 'eraser applied')
+  check(
+    '按住拖拽可以连续擦除路径上的笔画',
+    erased.strokes >= 1 && erased.value !== beforeErase,
+    `${erased.strokes} 段`
+  )
+
+  await click('[data-test="clear-annotations"]')
+  await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="dialog-confirm"]\'))'),
+    10_000,
+    'clear dialog'
+  )
+  await click('[data-test="dialog-confirm"]')
+  const clearedStrokes = await waitFor(async () => (await strokeCount()) === 0 ? true : null, 10_000, 'annotations cleared')
+  check('清空全部批注', clearedStrokes === true)
+  const removedRecord = await waitFor(async () => {
+    const record = await readScore(scoreId)
+    return record.annotations.length === 0 ? true : null
+  }, 10_000, 'annotations removed')
+  check('清空后删除本地记录', removedRecord === true)
+
+  // ---- 自动滚动：跟随目标跨页时滚到第二页 ----
+  if (secondPoint === null) throw new Error('第二页没有可点击的定位点')
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 390, height: 480, deviceScaleFactor: 1, mobile: true
+  })
+  await click('[data-test="mode-practice"]')
+  await click('[data-test="transport-toggle"]')
+  const practiceReady = await waitFor(async () => {
+    const error = await text('[data-test="practice-error"]')
+    if (error.length > 0) throw new Error(error)
+    const status = await text('[data-test="practice-status"]')
+    return status.length > 0 && status !== '正在打开麦克风' ? status : ''
+  }, 30_000, 'practice started')
+  check('图片曲谱可以开始跟随', practiceReady.length > 0, practiceReady)
+
+  // 第一个目标通常就在视口中央，不一定需要滚动；等平滑滚动落定后记下起点。
+  await sleep(700)
+  const firstScroll = await evaluate('window.scrollY')
+
+  await evaluate(`(() => {
+    const image = document.querySelectorAll('[data-test="page-image"]')[1]
+    if (!image) return false
+    const pageWidth = Number(image.dataset.pageWidth)
+    const rect = image.getBoundingClientRect()
+    const scale = rect.width / pageWidth
+    image.dispatchEvent(new MouseEvent('click', {
+      bubbles: true,
+      clientX: rect.left + ${secondPoint.x} * scale,
+      clientY: rect.top + ${secondPoint.y} * scale
+    }))
+    return true
+  })()`)
+  const scrolled = await waitFor(async () => {
+    const value = await evaluate('window.scrollY')
+    // 0 也是合法的起点，用对象包一层避免 waitFor 把 0 当作未完成。
+    return value > firstScroll + 100 ? { value } : null
+  }, 15_000, 'auto scroll to page 2')
+  const scrolledY = scrolled.value
+  check(
+    '跟随目标跨页时自动滚动',
+    scrolledY > firstScroll + 100,
+    `${Math.round(firstScroll)} → ${Math.round(scrolledY)}`
+  )
+
+  await click('[data-test="transport-stop"]')
+  await waitFor(() => evaluate('!document.querySelector(\'[data-test="practice-panel"]\')'), 10_000, 'practice stopped')
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 390, height: 844, deviceScaleFactor: 1, mobile: true
+  })
+
+  // ---- 谱架 ----
   await open('/')
   const cards = await waitFor(async () => {
     const value = await count('[data-test="shelf-score"]')
     return value > 0 ? value : null
   }, 60_000, 'shelf cards')
   const shelfText = await text('[data-test="shelf-score"]')
-  check('书架展示已保存曲谱', cards >= 1, `${cards} 份；首张：${shelfText.replace(/\s+/g, ' ').slice(0, 60)}`)
+  check('谱架展示已保存曲谱', cards >= 1, `${cards} 首；首张：${shelfText.replace(/\s+/g, ' ').slice(0, 60)}`)
+  const backdrops = await count('[data-test="score-backdrop"]')
+  check('多页曲谱在封面下叠第二页', backdrops === 1, `${backdrops} 张叠图`)
   await screenshot('shelf.png')
 
   // ---- 导入 MusicXML ----
@@ -582,6 +1084,12 @@ try {
   check('MusicXML 解析预览', preview.length > 0, preview.replace(/\s+/g, ' ').slice(0, 80))
 
   await click('[data-test="import-musicxml"]')
+  await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="import-musicxml-confirm"]\'))'),
+    10_000,
+    'import dialog'
+  )
+  await click('[data-test="import-musicxml-confirm"]')
   const importedPath = await waitFor(
     () => evaluate('location.pathname').then(value => (value.startsWith('/scores/') ? value : '')),
     120_000,
@@ -596,9 +1104,9 @@ try {
   )
   check('导入曲谱渲染出音符', importedNotes > 0, `${importedNotes} 个音符`)
   const noPageUi = await evaluate(
-    '!document.querySelector(\'[data-test="page-indicator"]\') && !document.querySelector(\'[data-test="page-image"]\')'
+    '!document.querySelector(\'[data-page-index]\') && !document.querySelector(\'[data-test="page-image"]\')'
   )
-  check('导入曲谱不显示翻页与页面图', noPageUi === true)
+  check('导入曲谱不显示纵向页容器与页面图', noPageUi === true)
   await screenshot('imported.png')
 
   const importedRecord = await readScore(importedId)
@@ -607,6 +1115,313 @@ try {
     '导入的 MusicXML 逐字节保存',
     structured !== undefined && structured.musicXml === importedXml,
     `${importedXml.length} 字符`
+  )
+
+  // ---- 谱集：长按拖动整理 ----
+  await open('/')
+  await waitFor(async () => {
+    const value = await count('[data-test="shelf-score"]')
+    return value >= 2 ? value : null
+  }, 60_000, 'two standalone scores')
+  const initialLibrary = await readLibrary()
+  check(
+    '整理前两首曲谱都是独立曲谱',
+    initialLibrary.scores.length === 2
+    && initialLibrary.collections.length === 0
+    && initialLibrary.scores.every(entry => entry.collectionId === null),
+    `${initialLibrary.scores.length} 首 / ${initialLibrary.collections.length} 个谱集`
+  )
+
+  await evaluate('window.scrollTo(0, 0)')
+  const targetCenter = await centerOf(`[data-test="shelf-score"][data-score-id="${importedId}"]`)
+  const draggedCenter = await centerOf(`[data-test="shelf-score"][data-score-id="${scoreId}"]`)
+  let ghostUsesThumbnail = false
+  await longPressDrag(draggedCenter, targetCenter, async () => {
+    ghostUsesThumbnail = await evaluate(`(() => {
+      const ghost = document.querySelector('[data-test="shelf-drag-ghost"]')
+      return ghost?.tagName === 'IMG' && (ghost.getAttribute('src') ?? '').startsWith('blob:')
+    })()`)
+  })
+  check('拖拽 ghost 用曲谱第一页图片', ghostUsesThumbnail === true)
+  await waitFor(async () => (await count('[data-test="shelf-collection"]')) === 1, 15_000, 'collection card')
+  const mergedCount = await text('[data-test="collection-count"]')
+  const mergedLibrary = await readLibrary()
+  const mergedCollection = mergedLibrary.collections[0]
+  const mergedMembers = mergedLibrary.scores.filter(entry => entry.collectionId === mergedCollection?.id)
+  check(
+    '长按拖动两首曲谱组成谱集',
+    mergedLibrary.collections.length === 1
+    && mergedMembers.length === 2
+    && mergedMembers.map(entry => entry.collectionOrder).sort().join(',') === '0,1',
+    `${mergedCollection?.title ?? '无'}；顺序 ${mergedMembers.map(entry => entry.collectionOrder).join(' / ')}`
+  )
+  check('谱集卡显示曲谱数量', mergedCount.includes('2 首'), mergedCount)
+  const coverTitle = await evaluate(`(() => {
+    const card = document.querySelector('[data-test="shelf-collection"]')
+    return {
+      inside: Boolean(card?.querySelector('[data-test="collection-cover-title"]')),
+      caption: card?.querySelector('[data-test="collection-title"]')?.textContent?.trim() ?? ''
+    }
+  })()`)
+  check(
+    '谱集名在封面里和卡片下方都显示',
+    coverTitle.inside === true && coverTitle.caption === mergedCollection?.title,
+    `封面内 ${coverTitle.inside} / 卡片下 ${coverTitle.caption}`
+  )
+  await screenshot('collections.png')
+
+  const mergedCollectionId = mergedCollection?.id ?? ''
+  // 拖动结束后的点击抑制持续约 300ms，等它释放再进入谱集页。
+  await sleep(400)
+  await click('[data-test="shelf-collection"]')
+  await waitFor(
+    () => evaluate('location.pathname').then(value => (value.startsWith('/collections/') ? value : '')),
+    30_000,
+    'collection page'
+  )
+  const memberCards = await waitFor(async () => {
+    const value = await count('[data-test="collection-score"]')
+    return value === 2 ? value : null
+  }, 30_000, 'collection members')
+  check('谱集页列出两首曲谱', memberCards === 2, `${memberCards} 首`)
+  await screenshot('collection-page.png')
+
+  // ---- 谱集编辑：封面与名称都在对话框里 ----
+  await click('[data-test="collection-edit"]')
+  await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="collection-title-input"]\'))'),
+    10_000,
+    'edit dialog'
+  )
+  await attachFiles('[data-test="collection-cover-picker"]', [firstImage])
+  const coverPreview = await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="collection-cover-image"]\'))'),
+    30_000,
+    'cover preview'
+  )
+  await evaluate(`(() => {
+    const input = document.querySelector('[data-test="collection-title-input"]')
+    if (!input) return false
+    input.value = '练习谱集'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })()`)
+  await screenshot('collection-cover.png')
+  await click('[data-test="collection-edit-confirm"]')
+  const editedLibrary = await waitFor(async () => {
+    const library = await readLibrary()
+    const value = await text('[data-test="page-title"]')
+    if (value !== '练习谱集') return null
+    return typeof library.collections[0]?.coverAssetId === 'string' ? library : null
+  }, 30_000, 'collection edited')
+  check(
+    '谱集可以在编辑对话框里设置封面',
+    coverPreview === true && typeof editedLibrary.collections[0]?.coverAssetId === 'string',
+    `封面资源 ${editedLibrary.collections[0]?.coverAssetId ?? '无'}`
+  )
+  const renamed = await text('[data-test="page-title"]')
+  check(
+    '谱集可以重命名',
+    renamed === '练习谱集' && editedLibrary.collections[0]?.title === '练习谱集',
+    renamed
+  )
+  // 等编辑对话框的关闭动画结束，避免遮罩吃掉下一次长按。
+  await sleep(600)
+
+  // ---- 拖出谱集 ----
+  const removedScoreId = await evaluate(
+    'document.querySelector(\'[data-test="collection-score"]\')?.dataset.scoreId ?? \'\''
+  )
+  await dragToRemoveZone('[data-test="collection-score"]')
+  await waitFor(async () => (await count('[data-test="collection-score"]')) === 1, 15_000, 'member removed')
+  const removedLibrary = await readLibrary()
+  const removedScore = removedLibrary.scores.find(entry => entry.id === removedScoreId)
+  check(
+    '拖到底部可以把曲谱移回谱架',
+    removedLibrary.scores.filter(entry => entry.collectionId === mergedCollectionId).length === 1
+    && removedScore?.collectionId === null,
+    `${removedScore?.title ?? ''} 回到独立曲谱`
+  )
+
+  // ---- 谱架：加入已有谱集 ----
+  await open('/')
+  await waitFor(async () => (await count('[data-test="shelf-score"]')) === 1, 30_000, 'standalone score')
+  const remainingCollectionCount = await text('[data-test="collection-count"]')
+  check(
+    '移出的曲谱回到谱架且谱集仍在',
+    remainingCollectionCount.includes('1 首'),
+    remainingCollectionCount
+  )
+  const shelfCover = await evaluate(`(() => {
+    const card = document.querySelector('[data-test="shelf-collection"]')
+    return {
+      cover: Boolean(card?.querySelector('[data-test="collection-cover"]')),
+      insideTitle: Boolean(card?.querySelector('[data-test="collection-cover-title"]')),
+      caption: card?.querySelector('[data-test="collection-title"]')?.textContent?.trim() ?? '',
+      badge: card?.querySelector('[data-test="collection-count"]')?.textContent?.trim() ?? ''
+    }
+  })()`)
+  check(
+    '有封面的谱集不再显示封面内标题',
+    shelfCover.cover === true && shelfCover.insideTitle === false,
+    `封面 ${shelfCover.cover} / 封面内标题 ${shelfCover.insideTitle}`
+  )
+  check(
+    '谱集名在图下、数量在封面右下角',
+    shelfCover.caption === '练习谱集' && shelfCover.badge === '1 首',
+    `${shelfCover.caption} · ${shelfCover.badge}`
+  )
+
+  await evaluate('window.scrollTo(0, 0)')
+  const remainingCenter = await centerOf('[data-test="shelf-score"]')
+  const existingCenter = await centerOf('[data-test="shelf-collection"]')
+  await longPressDrag(remainingCenter, existingCenter)
+  await waitFor(
+    async () => (await text('[data-test="collection-count"]')).includes('2 首'),
+    15_000,
+    'joined collection'
+  )
+  const joinedLibrary = await readLibrary()
+  const joinedMembers = joinedLibrary.scores.filter(entry => entry.collectionId === mergedCollectionId)
+  check('拖到已有谱集卡上可以加入', joinedMembers.length === 2, `${joinedMembers.length} 首`)
+
+  // ---- 删除谱集 ----
+  await sleep(400)
+  await click('[data-test="shelf-collection"]')
+  await waitFor(async () => (await count('[data-test="collection-score"]')) === 2, 30_000, 'collection reopened')
+  const collectionSeoTitle = await waitFor(async () => {
+    const value = await evaluate('document.title')
+    return value.includes('练习谱集') ? value : ''
+  }, 10_000, 'collection seo title')
+  check('谱集页标题带谱集名', collectionSeoTitle === '练习谱集 · 谱集 · NoteFlow', collectionSeoTitle)
+  await click('[data-test="collection-delete"]')
+  await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="dialog-confirm"]\'))'),
+    10_000,
+    'delete collection dialog'
+  )
+  await click('[data-test="dialog-confirm"]')
+  await waitFor(() => evaluate('location.pathname === \'/\''), 30_000, 'back to shelf')
+  const restoredCards = await waitFor(async () => {
+    const value = await count('[data-test="shelf-score"]')
+    return value === 2 ? value : null
+  }, 30_000, 'scores restored')
+  const restoredLibrary = await readLibrary()
+  check(
+    '删除谱集后曲谱全部回到谱架',
+    restoredLibrary.collections.length === 0
+    && restoredCards === 2
+    && restoredLibrary.scores.every(entry => entry.collectionId === null && entry.collectionOrder === null),
+    `${restoredCards} 首独立曲谱`
+  )
+  check(
+    '删除谱集后封面图一起清理',
+    restoredLibrary.covers.length === 0,
+    `${restoredLibrary.covers.length} 张封面资源`
+  )
+
+  // ---- 多页 PDF ----
+  await open('/import/pdf')
+  await attachFiles('[data-test="pdf-input"]', [pdfPath])
+  const pdfPageCount = await waitFor(async () => {
+    const failure = await text('[data-test="pdf-error"]')
+    if (failure) throw new Error(failure)
+    const value = await count('[data-test="page-item"]')
+    return value === 2 ? value : null
+  }, 120_000, 'pdf pages')
+  check('多页 PDF 逐页渲染成缩略图', pdfPageCount === 2, `${pdfPageCount} 页`)
+  const pdfNames = await evaluate(`[...document.querySelectorAll('[data-page-name]')].map(item => item.dataset.pageName)`)
+  check(
+    'PDF 页面按页码命名',
+    pdfNames.length === 2 && pdfNames[0].endsWith('-1.jpg') && pdfNames[1].endsWith('-2.jpg'),
+    pdfNames.join(' / ')
+  )
+  await screenshot('pdf-staged.png')
+
+  await click('[data-test="start-recognition"]')
+  const pdfStatus = await waitFor(async () => {
+    const current = await text('[data-test="status"]')
+    if (current.startsWith('识别完成')) return current
+    if (current.includes('失败') || current.includes('取消')) throw new Error(current)
+    return ''
+  }, TIMEOUT, 'pdf recognition finished')
+  check('PDF 页面识别完成', pdfStatus.startsWith('识别完成：2 页'), pdfStatus)
+
+  await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="save-score"]\'))'),
+    30_000,
+    'pdf save button'
+  )
+  await click('[data-test="save-score"]')
+  await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="save-score-confirm"]\'))'),
+    10_000,
+    'pdf save dialog'
+  )
+  const pdfScorePath = await (async () => {
+    await click('[data-test="save-score-confirm"]')
+    return waitFor(
+      () => evaluate('location.pathname').then(value => (value.startsWith('/scores/') ? value : '')),
+      120_000,
+      'pdf score page'
+    )
+  })()
+  const pdfScoreId = pdfScorePath.split('/').pop()
+  const pdfStored = await waitFor(async () => {
+    const record = await readScore(pdfScoreId)
+    return record && record.pages.length === 2 ? record : null
+  }, 30_000, 'pdf stored score')
+  check(
+    'PDF 曲谱保存为独立的两页',
+    pdfScoreId !== scoreId && pdfStored.pages.length === 2,
+    `${pdfScoreId} · ${pdfStored.pages.length} 页`
+  )
+
+  // ---- 自带曲集 ----
+  // 前面的流程都跳过了自带曲集；这里移除跳过标记并重新打开谱架，验证首次安装。
+  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: presetSkip.identifier })
+  await evaluate('localStorage.removeItem(\'noteflow:preset:off\')')
+  await open('/')
+  const presetShelf = await waitFor(async () => {
+    const titles = await evaluate(`[...document.querySelectorAll('[data-test="collection-title"]')]
+      .map(item => item.textContent.trim())`)
+    return titles.includes('小提琴经典曲集') ? titles : null
+  }, 180_000, 'preset collection')
+  check('首次打开自动安装自带曲集', presetShelf.includes('小提琴经典曲集'), presetShelf.join(' / '))
+
+  const presetCard = await evaluate(`(() => {
+    const card = [...document.querySelectorAll('[data-test="shelf-collection"]')]
+      .find(item => item.textContent.includes('小提琴经典曲集'))
+    if (!card) return null
+    return {
+      id: card.dataset.collectionId,
+      badge: card.querySelector('[data-test="collection-count"]')?.textContent?.trim() ?? '',
+      hasCover: Boolean(card.querySelector('[data-test="collection-cover"]'))
+    }
+  })()`)
+  check(
+    '自带曲集包含四首曲谱与封面',
+    presetCard !== null && presetCard.badge === '4 首' && presetCard.hasCover,
+    presetCard === null ? '未找到谱集卡' : `${presetCard.badge} · 封面${presetCard.hasCover ? '有' : '无'}`
+  )
+  await screenshot('preset-collection.png')
+
+  await open(`/collections/${presetCard.id}`)
+  const presetDetail = await waitFor(async () => {
+    const value = await count('[data-test="collection-score"]')
+    return value === 4 ? value : null
+  }, 30_000, 'preset collection page')
+  check('自带曲集打开后有四项曲目', presetDetail === 4, `${presetDetail} 项`)
+  await screenshot('preset-detail.png')
+
+  const presetLibrary = await readLibrary()
+  const presetScores = presetLibrary.scores.filter(entry => entry.collectionId === presetCard.id)
+  check(
+    '自带曲集的曲名与作曲家分开保存',
+    presetScores.length === 4
+    && presetScores.every(entry => entry.title.length > 0 && entry.composer.length > 0)
+    && presetScores.some(entry => entry.title === 'G 大调小步舞曲' && entry.composer === '佩措尔德'),
+    presetScores.map(entry => `${entry.title} · ${entry.composer}`).join(' / ')
   )
 
   report = {
@@ -621,10 +1436,25 @@ try {
       firstNotes: (firstRecord?.musicXml.match(/<note[\s>]/g) ?? []).length,
       secondNotes: (secondRecord?.musicXml.match(/<note[\s>]/g) ?? []).length
     },
-    selected: { index: targetIndex, noteNumber, noteSummary, noteDuration, ring },
-    canvas: { first: canvas1, second: canvas2 },
+    selected: { index: targetIndex, noteNumber, noteSummary, noteDuration, ringOffset },
+    pageSizes: { first: image1, second: image2 },
+    layout,
+    rails,
+    annotations: { drawn, restored: restoredStrokes, cleared: clearedStrokes },
+    scroll: { first: firstScroll, sought: scrolledY },
     shelf: { cards, first: shelfText.replace(/\s+/g, ' ').slice(0, 120) },
     import: { scoreId: importedId, notes: importedNotes, noPageUi, bytes: importedXml.length },
+    collections: {
+      id: mergedCollectionId,
+      title: renamed,
+      removed: removedScoreId,
+      restored: restoredLibrary.scores.map(entry => entry.title)
+    },
+    pdf: { scoreId: pdfScoreId, pages: pdfStored.pages.length, names: pdfNames },
+    preset: {
+      collection: presetCard?.id ?? null,
+      scores: presetScores.map(entry => `${entry.title} · ${entry.composer}`)
+    },
     elapsedMs: Date.now() - started,
     checks,
     generatedAt: new Date().toISOString()

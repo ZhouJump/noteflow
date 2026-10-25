@@ -22,11 +22,12 @@ logs
 /reference/homr/
 /reference/artifacts/
 
-# prepare-assets.mjs 生成的链接
+# prepare-assets.mjs 生成的资产
 /public/models
 /public/samples
 /public/ort
 /public/verovio
+/public/pdf
 
 # 参考实现自己的 ORT 链接（指向 node_modules）
 /reference/homr-web/public/ort

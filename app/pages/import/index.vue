@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * 导入入口：只列真实可用的两条链路（图片、MusicXML）。
+ * 导入入口：只列真实可用的三条链路（图片、PDF、MusicXML）。
  */
-useSeoMeta({ title: '导入乐谱 · NoteFlow' })
+usePageSeo('导入乐谱 · NoteFlow', '从相册图片、PDF 或 MusicXML 导入曲谱，识别全部在本机完成，不会上传。')
 
 const entries = [
   {
@@ -10,6 +10,12 @@ const entries = [
     description: '从相册选择页面',
     icon: 'i-lucide-images',
     to: '/import/images'
+  },
+  {
+    title: 'PDF',
+    description: '多页乐谱逐页导入',
+    icon: 'i-lucide-file-text',
+    to: '/import/pdf'
   },
   {
     title: 'MusicXML',
@@ -25,7 +31,7 @@ const entries = [
     <PageHeader
       title="导入乐谱"
       back="/"
-      back-label="返回书架"
+      back-label="返回谱架"
     />
 
     <div class="mx-auto grid max-w-2xl gap-3 px-4 pt-4">

@@ -15,18 +15,19 @@ import {
   type TrackerOutcome,
   type TrackerUpdate
 } from '~/lib/audio/practice'
+import { describeMicrophoneError } from '~/lib/audio/microphone'
+import { filterTargetsByHand, type HandMode } from '~/lib/audio/score'
 import type { MusicXmlNote } from '~/lib/musicxml/document'
 
-export type PracticePhase = 'idle' | 'starting' | 'listening' | 'done' | 'error'
+export type PracticePhase = 'idle' | 'starting' | 'listening' | 'paused' | 'done' | 'error'
 
 export interface PracticeSnapshot {
   phase: PracticePhase
-  /** 0 基：下一个要弹的目标；完成时等于 total。 */
+  /** 0 基：下一个要演奏的目标；完成时等于 total。 */
   position: number
   total: number
   current: PracticeTarget | null
   matched: number
-  skipped: number
   octaveMatches: number
   outcome: TrackerOutcome
   stale: boolean
@@ -38,38 +39,30 @@ export interface PracticeSnapshot {
 /** 每 60ms 取一帧，和跟踪器的稳定帧数配合，约 240ms 确认一个音。 */
 const FRAME_MS = 60
 
-function describeMicrophoneError(exception: unknown): string {
-  if (!(exception instanceof Error)) return '无法打开麦克风。'
-  if (exception.name === 'NotAllowedError' || exception.name === 'SecurityError') {
-    return '麦克风权限被拒绝。请在浏览器设置里允许后重试。'
-  }
-  if (exception.name === 'NotFoundError' || exception.name === 'OverconstrainedError') {
-    return '没有找到可用的麦克风。'
-  }
-  if (exception.name === 'NotReadableError' || exception.name === 'AbortError') {
-    return '麦克风被其他应用占用，关闭后重试。'
-  }
-  return `无法打开麦克风：${exception.message}`
-}
-
-export function usePractice(notes: () => MusicXmlNote[]) {
+export function usePractice(
+  notes: () => MusicXmlNote[],
+  options: { handMode?: () => HandMode } = {}
+) {
   const phase = ref<PracticePhase>('idle')
   const error = ref<string | null>(null)
   const snapshot = shallowRef<PracticeSnapshot | null>(null)
 
   const active = computed(() => phase.value !== 'idle')
   const starting = computed(() => phase.value === 'starting')
+  const paused = computed(() => phase.value === 'paused')
 
   let tracker: PracticeTracker | null = null
   let stream: MediaStream | null = null
   let context: AudioContext | null = null
   let timer: number | null = null
+  let tickFn: (() => void) | null = null
   let running = false
   let generation = 0
   let lastKey = ''
 
   function release(): void {
     running = false
+    tickFn = null
     if (timer !== null) {
       clearTimeout(timer)
       timer = null
@@ -100,7 +93,6 @@ export function usePractice(notes: () => MusicXmlNote[]) {
       total: update.total,
       current: update.current,
       matched: update.matched,
-      skipped: update.skipped,
       octaveMatches: update.octaveMatches,
       outcome: update.outcome,
       stale: update.stale,
@@ -174,24 +166,29 @@ export function usePractice(notes: () => MusicXmlNote[]) {
       if (update.done) return
       timer = window.setTimeout(tick, FRAME_MS)
     }
+    tickFn = tick
     tick()
   }
 
   async function start(): Promise<void> {
-    if (phase.value === 'starting' || phase.value === 'listening' || phase.value === 'done') return
+    if (
+      phase.value === 'starting'
+      || phase.value === 'listening'
+      || phase.value === 'paused'
+      || phase.value === 'done'
+    ) return
     const token = ++generation
     error.value = null
-    const targets = buildPracticeTargets(notes())
+    const targets = filterTargetsByHand(buildPracticeTargets(notes()), options.handMode?.() ?? 'both')
     if (targets.length === 0) {
       phase.value = 'error'
-      error.value = '这一页没有可跟弹的音符。'
+      error.value = '这份曲谱没有可跟随的音符。'
       snapshot.value = {
         phase: 'error',
         position: 0,
         total: 0,
         current: null,
         matched: 0,
-        skipped: 0,
         octaveMatches: 0,
         outcome: 'idle',
         stale: false,
@@ -210,7 +207,6 @@ export function usePractice(notes: () => MusicXmlNote[]) {
       total: targets.length,
       current: targets[0] ?? null,
       matched: 0,
-      skipped: 0,
       octaveMatches: 0,
       outcome: 'idle',
       stale: false,
@@ -234,7 +230,6 @@ export function usePractice(notes: () => MusicXmlNote[]) {
         total: targets.length,
         current: targets[0] ?? null,
         matched: 0,
-        skipped: 0,
         octaveMatches: 0,
         outcome: 'idle',
         stale: false,
@@ -253,6 +248,41 @@ export function usePractice(notes: () => MusicXmlNote[]) {
     error.value = null
     snapshot.value = null
     lastKey = ''
+  }
+
+  /** 暂停取帧但保留麦克风，恢复时不用重新申请权限。 */
+  function pause(): void {
+    if (phase.value !== 'listening') return
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+    running = false
+    tracker?.rearm()
+    phase.value = 'paused'
+    lastKey = ''
+    if (snapshot.value !== null) {
+      snapshot.value = {
+        ...snapshot.value,
+        phase: 'paused',
+        outcome: 'idle',
+        stale: false
+      }
+    }
+  }
+
+  function resume(): void {
+    if (phase.value !== 'paused') return
+    if (tracker === null || context === null || tickFn === null) return
+    tracker.rearm()
+    phase.value = 'listening'
+    lastKey = ''
+    if (snapshot.value !== null) {
+      snapshot.value = { ...snapshot.value, phase: 'listening' }
+    }
+    void context.resume().catch(() => {})
+    running = true
+    tickFn()
   }
 
   async function restart(): Promise<void> {
@@ -285,8 +315,11 @@ export function usePractice(notes: () => MusicXmlNote[]) {
     snapshot,
     active,
     starting,
+    paused,
     start,
     stop,
+    pause,
+    resume,
     restart,
     seek
   }

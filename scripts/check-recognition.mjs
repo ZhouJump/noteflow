@@ -130,6 +130,13 @@ await send('Runtime.enable')
 await send('DOM.enable')
 await send('Page.enable')
 
+// 页面在连接前已经启动：先给新文档写入跳过标记，再重新加载，让安装提示不要出现。
+await send('Page.addScriptToEvaluateOnNewDocument', {
+  source: `try { localStorage.setItem('noteflow:install:off', '1') } catch {}`
+})
+await send('Page.reload')
+await sleep(400)
+
 await waitFor(() => evaluate('document.readyState === \'complete\''), 60_000, 'page load')
 // 事件要在 Vue 挂载（监听器绑定）之后再派发，否则会被静默丢弃。
 await waitFor(() => evaluate('Boolean(document.querySelector("#__nuxt")?.__vue_app__)'), 60_000, 'vue mount')

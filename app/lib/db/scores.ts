@@ -1,5 +1,5 @@
 /**
- * 曲谱仓储：把识别结果/导入结果写成 IndexedDB 里的曲谱，以及书架、详情、删除。
+ * 曲谱仓储：把识别结果/导入结果写成 IndexedDB 里的曲谱，以及谱架、详情、删除。
  *
  * 只有这里碰 DOM 的 Blob 与 Canvas：原图、处理后页面和缩略图在进入事务之前就编码
  * 好，事务里只做纯写入。
@@ -9,58 +9,26 @@ import { toRaw } from 'vue'
 import { HOMR_SOURCE_REVISION, RECOGNITION_MODELS, type RecognitionResult } from '~/lib/homr/recognition'
 import { readMusicXmlSource, type ParsedMusicXml } from '~/lib/musicxml/document'
 import { deleteBatch, getAllByIndex, getAllRecords, getRecord, writeBatch } from './database'
+import { newId } from './ids'
+import { makeThumbnail } from './images'
 import type {
+  AnnotationRecord,
   AssetRecord,
   PageRecord,
   RecognitionRecord,
   RecognitionSidecar,
   ScoreDetail,
-  ScoreRecord
+  ScoreRecord,
+  ScoreRunRecord
 } from './schema'
 
 /** `segnet / encoder / decoder` 的版本串，写进识别记录。 */
 export const MODEL_VERSION = RECOGNITION_MODELS.join('; ')
 
-function newId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-}
-
-function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => {
-        if (blob === null) reject(new Error('无法编码图片'))
-        else resolve(blob)
-      },
-      type,
-      quality
-    )
-  })
-}
-
 async function decodeSize(blob: Blob): Promise<{ width: number, height: number }> {
   const bitmap = await createImageBitmap(blob)
   try {
     return { width: bitmap.width, height: bitmap.height }
-  } finally {
-    bitmap.close()
-  }
-}
-
-async function thumbnailFromBlob(blob: Blob, targetWidth = 420): Promise<Blob | null> {
-  const bitmap = await createImageBitmap(blob)
-  try {
-    const scale = Math.min(1, targetWidth / bitmap.width)
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale))
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale))
-    const context = canvas.getContext('2d')
-    if (context === null) return null
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
-    return await canvasToBlob(canvas, 'image/jpeg', 0.72)
   } finally {
     bitmap.close()
   }
@@ -84,6 +52,8 @@ export interface RecognizedPageInput {
 
 export interface RecognizedScoreInput {
   title?: string
+  /** 用户第一次保存时填写；留空则取识别结果里的作曲者。 */
+  composer?: string
   /** 按用户选择顺序排列，一页一条。 */
   pages: RecognizedPageInput[]
 }
@@ -99,8 +69,8 @@ function recognitionStatusFor(parsed: ParsedMusicXml, withoutPosition: number): 
 }
 
 /**
- * 保存一次导入的全部页面。每页存原图、处理后页面和一条识别记录，第一页再生成
- * 书架缩略图；所有写入在一个事务里完成，失败不会留下半份曲谱。
+ * 保存一次导入的全部页面。每页存原图、处理后页面、一条识别记录和一张缩略图；
+ * 第一页的缩略图同时作为谱架封面。所有写入在一个事务里完成，失败不会留下半份曲谱。
  */
 export async function saveRecognizedScore(input: RecognizedScoreInput): Promise<SaveResult> {
   if (input.pages.length === 0) throw new Error('没有可保存的页面')
@@ -157,6 +127,26 @@ export async function saveRecognizedScore(input: RecognizedScoreInput): Promise<
       })
     }
 
+    // 每页都留一张缩略图：第二页在谱架上垫在封面下面，像一叠散开的纸。
+    const thumbnailSource = entry.processed?.blob ?? entry.source
+    let thumbnailAssetId: string | null = null
+    if (thumbnailSource !== null) {
+      const thumbnail = await makeThumbnail(thumbnailSource).catch(() => null)
+      if (thumbnail !== null) {
+        thumbnailAssetId = newId()
+        assets.push({
+          id: thumbnailAssetId,
+          scoreId,
+          kind: 'thumbnail',
+          mimeType: 'image/jpeg',
+          blob: thumbnail,
+          width: 0,
+          height: 0,
+          createdAt: now
+        })
+      }
+    }
+
     const result = entry.result
     const sidecar: RecognitionSidecar = {
       title: result.title,
@@ -188,24 +178,8 @@ export async function saveRecognizedScore(input: RecognizedScoreInput): Promise<
       pageIndex: index,
       originalAssetId,
       processedAssetId,
+      thumbnailAssetId,
       recognitionResultId: recognitionId,
-      createdAt: now
-    })
-  }
-
-  const thumbnailSource = first.processed?.blob ?? first.source
-  const thumbnail = thumbnailSource === null ? null : await thumbnailFromBlob(thumbnailSource).catch(() => null)
-  let thumbnailAssetId: string | null = null
-  if (thumbnail !== null) {
-    thumbnailAssetId = newId()
-    assets.push({
-      id: thumbnailAssetId,
-      scoreId,
-      kind: 'thumbnail',
-      mimeType: 'image/jpeg',
-      blob: thumbnail,
-      width: 0,
-      height: 0,
       createdAt: now
     })
   }
@@ -214,7 +188,9 @@ export async function saveRecognizedScore(input: RecognizedScoreInput): Promise<
     || first.parsed.title.trim()
     || first.result.title
     || first.fileName.replace(/\.[^.]+$/, '')
-  const composer = pages.map(entry => entry.parsed.composer).find(value => value !== '') ?? ''
+  const composer = (input.composer ?? '').trim()
+    || pages.map(entry => entry.parsed.composer).find(value => value !== '')
+    || ''
   const needsReview = pages.some(
     entry => recognitionStatusFor(entry.parsed, entry.result.counts.withoutPosition) !== 'completed'
   )
@@ -223,12 +199,13 @@ export async function saveRecognizedScore(input: RecognizedScoreInput): Promise<
     title,
     composer,
     collectionId: null,
+    collectionOrder: null,
     sourceType: 'images',
     scoreFormat: 'image',
     recognitionStatus: needsReview ? 'needsReview' : 'completed',
     pageCount: pages.length,
     noteCount: pages.reduce((total, entry) => total + entry.parsed.notes.length, 0),
-    thumbnailAssetId,
+    thumbnailAssetId: pageRecords[0]?.thumbnailAssetId ?? null,
     createdAt: now,
     updatedAt: now
   }
@@ -264,6 +241,7 @@ export async function saveMusicXmlScore(input: MusicXmlImportInput): Promise<Sav
     title,
     composer,
     collectionId: null,
+    collectionOrder: null,
     sourceType: 'musicxml',
     scoreFormat: 'structured',
     recognitionStatus: parsed.notes.length > 0 ? 'completed' : 'needsReview',
@@ -298,26 +276,6 @@ export async function saveMusicXmlScore(input: MusicXmlImportInput): Promise<Sav
 export async function listScores(): Promise<ScoreRecord[]> {
   const scores = await getAllRecords<ScoreRecord>('scores')
   return scores.sort((left, right) => right.updatedAt - left.updatedAt)
-}
-
-export interface ShelfData {
-  scores: ScoreRecord[]
-  /** 缩略图 asset id -> Blob；书架不读原图与处理后页面。 */
-  thumbnails: Map<string, Blob>
-}
-
-/** 书架列表：只按 id 取缩略图，避免一次把几十 MB 的页面图读进内存。 */
-export async function listShelf(): Promise<ShelfData> {
-  const scores = await listScores()
-  const ids = scores
-    .map(score => score.thumbnailAssetId)
-    .filter((id): id is string => id !== null)
-  const assets = await Promise.all(ids.map(id => getRecord<AssetRecord>('assets', id)))
-  const thumbnails = new Map<string, Blob>()
-  for (const asset of assets) {
-    if (asset !== undefined) thumbnails.set(asset.id, asset.blob)
-  }
-  return { scores, thumbnails }
 }
 
 export async function loadScoreDetail(scoreId: string): Promise<ScoreDetail | null> {
@@ -360,18 +318,32 @@ export async function updateScoreMeta(
   await writeBatch([{ store: 'scores', records: [updated] }])
 }
 
-/** 删除曲谱连同页面、资源与识别记录。 */
+/** 删除曲谱连同页面、资源、识别记录、设置、批注与成绩；谱集空了也一起收尾。 */
 export async function deleteScore(scoreId: string): Promise<void> {
-  const [pages, assets, recognitions] = await Promise.all([
+  const [score, pages, assets, recognitions, annotations, runs] = await Promise.all([
+    getRecord<ScoreRecord>('scores', scoreId),
     getAllByIndex<PageRecord>('pages', 'byScore', scoreId),
     getAllByIndex<AssetRecord>('assets', 'byScore', scoreId),
-    getAllByIndex<RecognitionRecord>('recognitions', 'byScore', scoreId)
+    getAllByIndex<RecognitionRecord>('recognitions', 'byScore', scoreId),
+    getAllByIndex<AnnotationRecord>('annotations', 'byScore', scoreId),
+    getAllByIndex<ScoreRunRecord>('runs', 'byScore', scoreId)
   ])
+  const collectionId = score?.collectionId ?? null
+  const siblings = collectionId === null
+    ? []
+    : await getAllByIndex<ScoreRecord>('scores', 'byCollection', collectionId)
+  const emptyCollectionKeys = collectionId !== null && siblings.every(entry => entry.id === scoreId)
+    ? [collectionId]
+    : []
   await deleteBatch([
     { store: 'scores', keys: [scoreId] },
     { store: 'pages', keys: pages.map(page => page.id) },
     { store: 'assets', keys: assets.map(asset => asset.id) },
-    { store: 'recognitions', keys: recognitions.map(recognition => recognition.id) }
+    { store: 'recognitions', keys: recognitions.map(recognition => recognition.id) },
+    { store: 'settings', keys: [scoreId] },
+    { store: 'annotations', keys: annotations.map(annotation => annotation.id) },
+    { store: 'runs', keys: runs.map(run => run.id) },
+    { store: 'collections', keys: emptyCollectionKeys }
   ])
 }
 

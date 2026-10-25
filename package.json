@@ -14,6 +14,7 @@
     "check:score": "node scripts/check-score.mjs",
     "check:tracker": "node scripts/check-tracker.mjs",
     "check:practice": "node scripts/check-practice.mjs",
+    "check:scoring": "node scripts/check-scoring.mjs",
     "check:size": "node scripts/check-bundle-size.mjs"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
     "fflate": "^0.8.3",
     "nuxt": "^4.6.2",
     "onnxruntime-web": "1.30.0",
+    "pdfjs-dist": "^6.4.299",
     "pitchy": "^4.1.0",
     "tailwindcss": "^4.3.3",
     "verovio": "^6.3.0"

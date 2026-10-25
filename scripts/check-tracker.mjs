@@ -3,8 +3,9 @@
  *
  *   node scripts/check-tracker.mjs
  *
- * 覆盖：稳定帧确认、持续音只算一次、错音不推进、向前窗口搜索、重复音需要重新
- * 起音、八度等价、低清晰度忽略、和弦/休止/装饰音/延音线整理、手动定位与超时提示。
+ * 覆盖：稳定帧确认、持续音只算一次、错音不推进、不向前跳音、重复音需要重新
+ * 起音、八度等价、低清晰度忽略、双手/和弦分组、休止/装饰音/延音线整理、手动定位、
+ * 连续 8 键匹配乐谱别处后的追寻跳转、超时提示。
  * 输出写到 reference/artifacts/m6/tracker.run.json。
  */
 
@@ -16,6 +17,7 @@ import {
   PracticeTracker,
   buildPracticeTargets,
   frequencyForMidi,
+  handColor,
   midiForFrequency,
   midiLabel
 } from '../app/lib/audio/practice.ts'
@@ -39,6 +41,7 @@ function note(index, step, octave, onset, extra = {}) {
     pitch: { step, alter: 0, octave },
     onset,
     partId: 'P1',
+    staff: 1,
     isRest: false,
     isGrace: false,
     tieStart: false,
@@ -71,7 +74,10 @@ const E4 = 64
 const F4 = 65
 const G4 = 67
 const A4 = 69
+const B4 = 71
 const C5 = 72
+const D5 = 74
+const E5 = 76
 
 try {
   check('440Hz 对应 A4', Math.abs(midiForFrequency(440) - 69) < 1e-9)
@@ -102,12 +108,20 @@ try {
   check('错音不推进', update.position === 1 && update.outcome === 'unmatched', `${update.outcome}`)
 
   update = feed(tracker, E4, 2080, 4)
-  check('向前窗口内跳过漏音', update.position === 3 && update.skipped === 1 && update.outcome === 'skipped', `跳到第 ${update.position} 个目标`)
+  check(
+    '后面的音不会跳过当前目标',
+    update.position === 1 && update.outcome === 'unmatched',
+    `pos=${update.position} / ${update.outcome}`
+  )
 
-  update = feed(tracker, F4, 2320, 4)
+  update = feed(tracker, D4, 2320, 4)
+  check('回到当前目标后继续推进', update.position === 2, `${update.position}`)
+
+  update = feed(tracker, E4, 2560, 4)
+  update = feed(tracker, F4, 2800, 4)
   check('最后一个音完成后标记结束', update.done === true && update.position === update.total, `${update.position} / ${update.total}`)
 
-  // 倒退音不能把游标拉回去：游标在 D4 时再弹 C4，保持不动。
+  // 倒退音不能把游标拉回去：游标在 D4 时再演奏 C4，保持不动。
   tracker = new PracticeTracker(ascending)
   feed(tracker, C4, 3000)
   feed(tracker, D4, 3240)
@@ -143,23 +157,63 @@ try {
   update = feed(tracker, C4, 7660, 4, { clarity: 0.95 })
   check('清晰度恢复后推进', update.position === 1, `${update.position}`)
 
-  // 和弦与跨声部：同一拍点合并，弹中任意一个音都算。
-  const chord = buildPracticeTargets([
-    note(0, 'C', 4, 0, { partId: 'P1' }),
-    note(1, 'E', 4, 0, { partId: 'P2' }),
-    note(2, 'G', 4, 1, { partId: 'P1' })
+  // 双手：同一拍点按 staff 拆成两只手，两只手都在时间窗内各演奏一个音才推进。
+  const hands = buildPracticeTargets([
+    note(0, 'C', 5, 0, { staff: 1 }),
+    note(1, 'C', 4, 0, { staff: 2 }),
+    note(2, 'D', 5, 1, { staff: 1 }),
+    note(3, 'D', 4, 1, { staff: 2 })
   ])
   check(
-    '同一拍点的音合并成和弦',
-    chord.length === 2
-    && chord[0].pitches.join(',') === '60,64'
-    && chord[0].indices.join(',') === '0,1'
-    && chord[0].label === 'C4 · E4',
-    chord.map(target => target.label).join(' / ')
+    '同一拍点按手分组',
+    hands.length === 2
+    && hands[0].hands.length === 2
+    && hands[0].hands.map(hand => hand.lead).join(',') === '0,1'
+    && hands[0].label === 'C4 · C5',
+    hands.map(target => target.label).join(' / ')
   )
-  tracker = new PracticeTracker(chord)
-  update = feed(tracker, E4, 8000)
-  check('和弦中任意音推进', update.position === 1 && update.outcome === 'matched', `${update.position}`)
+  check('左右手箭头颜色不同', handColor(0) !== handColor(1), `${handColor(0)} / ${handColor(1)}`)
+
+  tracker = new PracticeTracker(hands)
+  update = feed(tracker, C5, 8000)
+  check(
+    '只演奏右手不推进',
+    update.position === 0 && update.outcome === 'partial',
+    `pos=${update.position} / ${update.outcome}`
+  )
+  update = feed(tracker, C4, 8400)
+  check('补上左手后推进', update.position === 1 && update.outcome === 'matched', `${update.position}`)
+
+  tracker = new PracticeTracker(hands)
+  feed(tracker, C4, 9000)
+  update = feed(tracker, C5, 9400)
+  check('左手先演奏也要等右手', update.position === 1, `${update.position}`)
+
+  tracker = new PracticeTracker(hands, { handWindowMs: 1000 })
+  feed(tracker, C5, 10000)
+  update = feed(tracker, C4, 11200)
+  check(
+    '超过时间窗只算一只手',
+    update.position === 0 && update.outcome === 'partial',
+    `pos=${update.position} / ${update.outcome}`
+  )
+  update = feed(tracker, C5, 11600)
+  check('时间窗内补齐两只手后推进', update.position === 1, `${update.position}`)
+
+  // 同一只手内的和弦仍按任一音计：Pitchy 是单音检测，无法可靠拆开同时发声的和弦。
+  const oneHand = buildPracticeTargets([
+    note(0, 'C', 4, 0, { staff: 1 }),
+    note(1, 'E', 4, 0, { staff: 1 }),
+    note(2, 'G', 4, 1, { staff: 1 })
+  ])
+  check(
+    '同一只手的和弦归到一组',
+    oneHand[0].hands.length === 1 && oneHand[0].pitches.join(',') === '60,64',
+    oneHand[0].label
+  )
+  tracker = new PracticeTracker(oneHand)
+  update = feed(tracker, C4, 12000)
+  check('单只手的和弦演奏一个音推进', update.position === 1 && update.outcome === 'matched', `${update.position}`)
 
   // 休止符、装饰音和延音线后半段不作为目标。
   const filtered = buildPracticeTargets([
@@ -170,7 +224,7 @@ try {
     note(4, 'F', 4, 4)
   ])
   check(
-    '休止、装饰音、延音线不要求弹奏',
+    '休止、装饰音、延音线不要求演奏',
     filtered.map(target => target.label).join(',') === 'C4,F4' && filtered[1].lead === 4,
     filtered.map(target => target.label).join(' / ')
   )
@@ -182,6 +236,38 @@ try {
   update = feed(tracker, E4, 9000)
   check('定位后能继续推进', update.position === 3, `${update.position}`)
 
+  // 追寻：最近 8 键命中当前音不足 3 个，且完整命中别处 8 连音时跳到其后。
+  const chase = buildPracticeTargets([
+    note(0, 'C', 4, 0),
+    note(1, 'D', 4, 1),
+    note(2, 'E', 4, 2),
+    note(3, 'F', 4, 3),
+    note(4, 'G', 4, 4),
+    note(5, 'A', 4, 5),
+    note(6, 'B', 4, 6),
+    note(7, 'D', 5, 7),
+    note(8, 'E', 5, 8),
+    note(9, 'F', 5, 9)
+  ])
+  const away = [D4, E4, F4, G4, A4, B4, D5, E5]
+  tracker = new PracticeTracker(chase)
+  let chaseAt = 13000
+  for (const midi of away.slice(0, 7)) {
+    update = feed(tracker, midi, chaseAt)
+    chaseAt += 240
+  }
+  check(
+    '不足 8 键不跳转',
+    update.position === 0 && update.outcome === 'unmatched',
+    `pos=${update.position} / ${update.outcome}`
+  )
+  update = feed(tracker, away[7], chaseAt)
+  check(
+    '8 键完整命中别处后跳到其后一个音',
+    update.position === 9 && update.outcome === 'jumped' && update.current?.label === 'F5',
+    `pos=${update.position} / ${update.outcome} / ${update.current?.label}`
+  )
+
   // 超时提示：一段时间没有推进后 stale 为真，推进后恢复。
   tracker = new PracticeTracker(ascending, { staleMs: 1000 })
   feed(tracker, C4, 10000)
@@ -190,21 +276,6 @@ try {
   check('长时间没有推进给出提示', update.stale === true && update.position === 1, `stale=${update.stale}`)
   update = feed(tracker, D4, 12000)
   check('推进后清除超时提示', update.stale === false && update.position === 2, `stale=${update.stale}`)
-
-  // 查找窗口之外不猜。
-  const long = buildPracticeTargets([
-    note(0, 'C', 4, 0),
-    note(1, 'D', 4, 1),
-    note(2, 'E', 4, 2),
-    note(3, 'F', 4, 3),
-    note(4, 'G', 4, 4),
-    note(5, 'A', 4, 5)
-  ])
-  tracker = new PracticeTracker(long)
-  update = feed(tracker, A4, 13000, 6)
-  check('窗口外的音不猜', update.position === 0 && update.outcome === 'unmatched', `${update.outcome}`)
-  update = feed(tracker, G4, 13400)
-  check('窗口边缘可以跳过去', update.position === 5 && update.skipped === 4, `${update.position} / 跳过 ${update.skipped}`)
 
   const failed = checks.filter(entry => !entry.ok)
   const report = {

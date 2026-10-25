@@ -10,6 +10,8 @@ const props = defineProps<{
   index: number
   total: number
   note: MusicXmlNote
+  /** 多页曲谱里当前音符所在页，例如“第 2 页”。 */
+  pageLabel?: string
 }>()
 
 const emit = defineEmits<{ close: [] }>()
@@ -51,6 +53,9 @@ const typeLabel = computed(() => {
         data-test="note-duration"
       >
         {{ typeLabel }} · 第 {{ note.measureNumber }} 小节
+        <template v-if="pageLabel">
+          · {{ pageLabel }}
+        </template>
       </p>
     </div>
     <span
