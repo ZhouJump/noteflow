@@ -50,14 +50,41 @@ type Stage = 'preprocess' | 'segnet' | 'symbols' | 'staffs' | 'transformer' | 'm
 
 const sessions = new Map<string, Promise<ort.InferenceSession>>()
 
+interface ModelManifest {
+  size: number
+  parts: string[]
+}
+
+/**
+ * 模型按 ≤10 MB 切片存放（见 scripts/prepare-assets.mjs）。顺序取回分片写进一块
+ * 连续内存，避免整份模型同时存在多份拷贝——手机端内存吃不消。
+ */
+async function modelBytes(name: string): Promise<Uint8Array> {
+  const manifestUrl = `/models/${name}.onnx.json`
+  const response = await fetch(manifestUrl)
+  if (!response.ok) throw new Error(`${manifestUrl}: HTTP ${response.status}`)
+  const manifest = await response.json() as ModelManifest
+  const bytes = new Uint8Array(manifest.size)
+  let offset = 0
+  for (const part of manifest.parts) {
+    const result = await fetch(`/models/${part}`)
+    if (!result.ok) throw new Error(`${part}: HTTP ${result.status}`)
+    const chunk = new Uint8Array(await result.arrayBuffer())
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  if (offset !== manifest.size) {
+    throw new Error(`${name}.onnx 分片不完整：${offset} / ${manifest.size} 字节`)
+  }
+  return bytes
+}
+
 function session(name: 'segnet' | 'encoder' | 'decoder'): Promise<ort.InferenceSession> {
   let cached = sessions.get(name)
   if (!cached) {
     cached = (async () => {
       const runtime = await loadOrt()
-      const response = await fetch(`/models/${name}.onnx`)
-      if (!response.ok) throw new Error(`${name}.onnx: HTTP ${response.status}`)
-      const bytes = await response.arrayBuffer()
+      const bytes = await modelBytes(name)
       return runtime.InferenceSession.create(bytes, {
         executionProviders: ['wasm'],
         graphOptimizationLevel: 'all'

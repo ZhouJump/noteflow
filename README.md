@@ -26,7 +26,7 @@ app/                  应用源码（Nuxt srcDir）
   lib/db/               IndexedDB 实体与仓储
   lib/verovio.ts        Verovio 懒加载与串行渲染
   lib/vision/           图像前置：缩放、灰度、CLAHE
-public/               运行时静态资源（models/ samples/ verovio/ 由脚本链接生成；ort/ 为分片产物，不入库）
+public/               运行时静态资源（models/ ort/ 为 ≤10 MB 分片，samples/ verovio/ 为复制，均由脚本生成、不入库）
 reference/            只读参考资料，不入运行时
   homr/                 上游 HOMR 源码与 ONNX 模型（体积大，本地准备）
   homr-web/             参考实现：可运行的浏览器端 demo（Vite）
@@ -39,22 +39,27 @@ scripts/              prepare-assets.mjs、check-bundle-size.mjs、各 check-*.m
 
 ## 准备
 
-需要 Node 24 与 pnpm。模型、样例、ORT 运行时都不入库，首次运行前链接一次：
+需要 Node 24 与 pnpm。模型、样例、ORT 运行时都不入库，首次运行前生成一次：
 
 ```bash
 pnpm install
-pnpm assets          # 链接 models/samples/verovio，并生成 public/ort 的 wasm 分片
+pnpm assets          # 准备模型分片、样例与 Verovio，并生成 public/ort 的 wasm 分片
 ```
 
 `pnpm dev` / `pnpm build` 会自动先跑这一步。资产来源：
 
 | 运行时路径 | 来源 |
 | --- | --- |
-| `public/models/*.onnx` | `reference/homr/homr/{segmentation,transformer}/*.onnx` |
-| `public/samples` | `reference/samples/input` |
+| `public/models/*.onnx.part-*`、`*.onnx.json` | `reference/homr/homr/{segmentation,transformer}/*.onnx`，按 10 MB 切片 |
+| `public/samples` | `reference/samples/input`（复制） |
 | `public/ort/ort.wasm.mjs`、`ort-wasm-simd-threaded.mjs` | `node_modules/onnxruntime-web/dist`（API 与胶水代码） |
 | `public/ort/ort-wasm-simd-threaded.wasm.*` | 同目录的 wasm 按 10 MB 切片，附 `ort-wasm-simd-threaded.wasm.json` 清单 |
-| `public/verovio/*.mjs` | `node_modules/verovio/dist`（排版引擎，wasm 内嵌） |
+| `public/verovio/*.mjs` | `node_modules/verovio/dist`（排版引擎，wasm 内嵌，复制） |
+
+构建环境（例如 EdgeOne）里没有 `reference/homr` 时，`prepare-assets` 会从
+`https://github.com/liebharc/homr/releases/download/onnx_checkpoints/` 下载 fp32 模型
+（约 152 MB），解压后缓存在 `.cache/noteflow-models/` 再切片。下载慢或不可达时用
+`HOMR_MODEL_BASE` 指向镜像；拿不到模型会让构建直接失败，而不是产出没有模型的包。
 
 ## 开发
 
@@ -70,18 +75,21 @@ pnpm typecheck
 
 ## 构建产物体积
 
-`ort-wasm-simd-threaded.wasm` 原始大小 14.2 MB。`pnpm assets` 把它切成两片
-（10,000,000 + 4,239,897 字节）并写一份 `ort-wasm-simd-threaded.wasm.json`；Worker 在第一次
-识别时按清单取回全部分片，拼成 Blob 后交给 ORT。ORT 的 JS 胶水（`ort.wasm.mjs`）也从
-`public/ort/` 动态加载，不再进入 Worker bundle，因此 `_nuxt/` 里不会再有 14 MB 的 wasm 副本。
+构建产物里不允许出现超过 10 MB 的单个文件，大资产全部按需切片：
 
-`pnpm build` 末尾会运行 `node scripts/check-bundle-size.mjs`（也可以单独执行 `pnpm check:size`）：
-扫描 `.output` 里实际落盘的文件，任何单个文件超过 10,000,000 字节就失败。
-`.output/public/models` 与 `public/verovio` 仍是脚本生成的符号链接，不计入产物体积；部署到不跟随
-符号链接的平台时，需要另外提供这些文件（模型单个 47–57 MB，若部署平台同样限制单文件大小，
-需要另行分片）。
+- `ort-wasm-simd-threaded.wasm` 原始 14.2 MB，切成两片（10,000,000 + 4,239,897 字节）并写
+  `ort-wasm-simd-threaded.wasm.json`；Worker 第一次识别时按清单取回并拼成 Blob。ORT 的 JS
+  （`ort.wasm.mjs`）也从 `public/ort/` 动态加载，不进入 Worker bundle，`_nuxt/` 里不再有
+  14 MB 的 wasm 副本。
+- 三个 ONNX 模型（57.3 / 52.9 / 47.3 MB）各切成 5–6 片，附 `<name>.onnx.json`；
+  `pipeline.worker.ts` 顺序取回分片、写进一块连续内存后再建 session，避免手机端同时持有整份模型的多份拷贝。
+- Verovio（7.3 MB）与样例图直接复制，不再用符号链接——部署只会带走 `.output` / `.edgeone`，
+  链接指向的仓库外路径不会跟着走。
 
-首次识别会多一次 wasm 分片下载与拼接，之后由浏览器缓存；耗时计入现有 `modelLoad` 阶段。
+`pnpm build` 末尾运行 `node scripts/check-bundle-size.mjs`（也可以单独执行 `pnpm check:size`），
+同时扫描 `.output` 与 EdgeOne 生成的 `.edgeone`：任何文件超过 10,000,000 字节就失败。
+
+首次识别要下载约 166 MB 的模型与 wasm 分片，之后由浏览器缓存；耗时计入现有 `modelLoad` 阶段。
 
 ## 验收
 
@@ -163,4 +171,4 @@ pnpm preview        # 或 npm run dev / npm run test:browser
 - 评分模式、节拍器与自动翻页：当前只有练习模式和手动“下一页”；
 - 真实乐器、噪声环境与手机麦克风下的跟踪调参：验收用的是 Chromium 假麦克风；
 - 多页曲谱的旋转、裁切与重新排序后的识别复用，谱集整理、批注与练习记录；
-- 模型与 Verovio 的体积：模型（47–57 MB）和 Verovio 仍以符号链接接入，尚未像 wasm 一样分片。
+- 模型首次加载：还没有下载进度与持久化缓存，弱网下第一次识别要等约 152 MB 分片。

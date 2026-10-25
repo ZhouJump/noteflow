@@ -156,7 +156,12 @@ const browser = spawn(
   ],
   { stdio: 'ignore' }
 )
-process.on('exit', () => browser.kill('SIGKILL'))
+// 临时 profile 与假音频都有几百 MB：退出时一并清理。
+process.on('exit', () => {
+  browser.kill('SIGKILL')
+  fs.rmSync(profile, { recursive: true, force: true })
+  fs.rmSync(workDir, { recursive: true, force: true })
+})
 
 await waitFor(async () => {
   const response = await fetch(`http://127.0.0.1:${PORT}/json/version`)
@@ -190,6 +195,11 @@ socket.addEventListener('message', (event) => {
     const details = message.params.exceptionDetails
     console.log(`[page error] ${details.exception?.description ?? details.text}`)
   }
+})
+// 浏览器崩溃时连接会直接断开：让挂起的命令立刻失败，而不是停在 unsettled await。
+socket.addEventListener('close', () => {
+  for (const { reject } of pending.values()) reject(new Error('浏览器连接已断开'))
+  pending.clear()
 })
 
 const send = (method, params = {}) =>
