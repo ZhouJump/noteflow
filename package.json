@@ -20,6 +20,7 @@
     "@iconify-json/lucide": "^1.2.145",
     "@iconify-json/simple-icons": "^1.2.100",
     "@nuxt/ui": "^4.12.0",
+    "fflate": "^0.8.3",
     "nuxt": "^4.6.2",
     "onnxruntime-web": "1.30.0",
     "pitchy": "^4.1.0",
@@ -30,7 +31,6 @@
     "@nuxt/eslint": "^1.17.0",
     "eslint": "^10.13.0",
     "eslint-plugin-better-tailwindcss": "^4.9.1",
-    "fflate": "^0.8.3",
     "typescript": "^6.0.3",
     "vue-tsc": "^3.3.13"
   },
