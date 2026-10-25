@@ -3,8 +3,9 @@
  *
  *   node scripts/check-bundle-size.mjs
  *
- * `.output` 里的符号链接（模型、Verovio 等本地大文件）不算产物内容，跳过；
- * 实际落盘的文件按字节比较，超过上限时列出并返回非零退出码。
+ * `.output` 与 EdgeOne 生成的 `.edgeone` 都会被扫描；里面的符号链接（模型、Verovio
+ * 等本地大文件）不算产物内容，跳过；实际落盘的文件按字节比较，超过上限时列出并返回
+ * 非零退出码。
  */
 
 import fs from 'node:fs'
@@ -13,7 +14,10 @@ import { fileURLToPath } from 'node:url'
 
 const LIMIT = 10_000_000
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const output = path.join(root, '.output')
+const outputs = [
+  path.join(root, '.output'),
+  path.join(root, '.edgeone')
+].filter(directory => fs.existsSync(directory))
 const links = []
 
 function walk(directory) {
@@ -30,12 +34,14 @@ function walk(directory) {
   return files
 }
 
-if (!fs.existsSync(output)) {
-  console.error('缺少 .output，先运行 pnpm build')
+if (outputs.length === 0) {
+  console.error('缺少 .output / .edgeone，先运行 pnpm build')
   process.exit(1)
 }
 
-const files = walk(output).sort((left, right) => right.size - left.size)
+const files = outputs
+  .flatMap(directory => walk(directory))
+  .sort((left, right) => right.size - left.size)
 const oversized = files.filter(file => file.size > LIMIT)
 for (const file of files.slice(0, 5)) {
   console.log(`${String(file.size).padStart(10)}  ${path.relative(root, file.path)}`)

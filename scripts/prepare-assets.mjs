@@ -53,10 +53,19 @@ for (const [source, rel] of links) {
   }
   const target = path.join(pub, rel)
   const directory = fs.statSync(source).isDirectory()
+  const relative = path.relative(path.dirname(target), source)
+  try {
+    if (fs.lstatSync(target).isSymbolicLink() && fs.readlinkSync(target) === relative) {
+      console.log(`${rel} (kept)`)
+      continue
+    }
+  } catch {
+    // 目标不存在或不是链接，继续重建
+  }
   fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.rmSync(target, { force: true, recursive: true })
   try {
-    fs.symlinkSync(path.relative(path.dirname(target), source), target, directory ? 'dir' : 'file')
+    fs.symlinkSync(relative, target, directory ? 'dir' : 'file')
   } catch {
     if (directory) fs.cpSync(source, target, { recursive: true })
     else fs.copyFileSync(source, target)
@@ -74,14 +83,31 @@ function prepareOrt() {
   const glue = path.join(ort, 'ort-wasm-simd-threaded.mjs')
   const api = path.join(ort, 'ort.wasm.mjs')
   const target = path.join(pub, 'ort')
+  const manifestPath = path.join(target, 'ort-wasm-simd-threaded.wasm.json')
+  const apiTarget = path.join(target, 'ort.wasm.mjs')
+  const glueTarget = path.join(target, 'ort-wasm-simd-threaded.mjs')
+  // 重复运行时保持现有分片，避免打断正在加载这些文件的 Worker。
+  try {
+    const existing = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    const same = existing.size === fs.statSync(wasm).size
+      && existing.parts.every(part => fs.existsSync(path.join(target, part)))
+      && fs.statSync(apiTarget).size === fs.statSync(api).size
+      && fs.statSync(glueTarget).size === fs.statSync(glue).size
+    if (same) {
+      console.log(`ort (kept, ${existing.parts.length} 片)`)
+      return
+    }
+  } catch {
+    // 首次生成或清单损坏，走重建
+  }
   fs.rmSync(target, { recursive: true, force: true })
   if (!fs.existsSync(wasm) || !fs.existsSync(glue) || !fs.existsSync(api)) {
     console.log(`missing: ${path.relative(root, wasm)} / ${path.relative(root, glue)} / ${path.relative(root, api)}`)
     return
   }
   fs.mkdirSync(target, { recursive: true })
-  fs.copyFileSync(api, path.join(target, 'ort.wasm.mjs'))
-  fs.copyFileSync(glue, path.join(target, 'ort-wasm-simd-threaded.mjs'))
+  fs.copyFileSync(api, apiTarget)
+  fs.copyFileSync(glue, glueTarget)
   const bytes = fs.readFileSync(wasm)
   const parts = []
   for (let offset = 0, index = 0; offset < bytes.length; offset += ORT_CHUNK, index += 1) {
