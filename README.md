@@ -52,9 +52,9 @@ pnpm assets          # 准备模型分片、样例与 Verovio，并生成 public
 | --- | --- |
 | `public/models/*.onnx.part-*`、`*.onnx.json` | `reference/homr/homr/{segmentation,transformer}/*.onnx`，按 10 MB 切片 |
 | `public/samples` | `reference/samples/input`（复制） |
-| `public/ort/ort.wasm.mjs`、`ort-wasm-simd-threaded.mjs` | `node_modules/onnxruntime-web/dist`（API 与胶水代码） |
+| `public/ort/ort.wasm.js`、`ort-wasm-simd-threaded.js` | `node_modules/onnxruntime-web/dist`（API 与胶水代码） |
 | `public/ort/ort-wasm-simd-threaded.wasm.*` | 同目录的 wasm 按 10 MB 切片，附 `ort-wasm-simd-threaded.wasm.json` 清单 |
-| `public/verovio/*.mjs` | `node_modules/verovio/dist`（排版引擎，wasm 内嵌，复制） |
+| `public/verovio/*.js` | `node_modules/verovio/dist`（排版引擎，wasm 内嵌，复制） |
 
 构建环境（例如 EdgeOne）里没有 `reference/homr` 时，`prepare-assets` 会从
 `https://github.com/liebharc/homr/releases/download/onnx_checkpoints/` 下载 fp32 模型
@@ -79,8 +79,10 @@ pnpm typecheck
 
 - `ort-wasm-simd-threaded.wasm` 原始 14.2 MB，切成两片（10,000,000 + 4,239,897 字节）并写
   `ort-wasm-simd-threaded.wasm.json`；Worker 第一次识别时按清单取回并拼成 Blob。ORT 的 JS
-  （`ort.wasm.mjs`）也从 `public/ort/` 动态加载，不进入 Worker bundle，`_nuxt/` 里不再有
+  （`ort.wasm.js`）也从 `public/ort/` 动态加载，不进入 Worker bundle，`_nuxt/` 里不再有
   14 MB 的 wasm 副本。
+- ORT 与 Verovio 的模块脚本一律落成 `.js`：EdgeOne 这类静态托管没给 `.mjs` 配 MIME，
+  会以 `application/octet-stream` 返回，浏览器按模块脚本加载时直接拒绝。
 - 三个 ONNX 模型（57.3 / 52.9 / 47.3 MB）各切成 5–6 片，附 `<name>.onnx.json`；
   `pipeline.worker.ts` 顺序取回分片、写进一块连续内存后再建 session，避免手机端同时持有整份模型的多份拷贝。
 - Verovio（7.3 MB）与样例图直接复制，不再用符号链接——部署只会带走 `.output` / `.edgeone`，

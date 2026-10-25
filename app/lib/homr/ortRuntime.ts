@@ -12,8 +12,12 @@
 
 export type OrtModule = typeof import('onnxruntime-web/wasm')
 
-const ORT_API = '/ort/ort.wasm.mjs'
-const ORT_GLUE = '/ort/ort-wasm-simd-threaded.mjs'
+/**
+ * 用 `.js` 而不是原包的 `.mjs`：EdgeOne 这类静态托管没给 `.mjs` 配 MIME，
+ * 会以 `application/octet-stream` 返回，浏览器按模块脚本加载时直接拒绝。
+ */
+const ORT_API = '/ort/ort.wasm.js'
+const ORT_GLUE = '/ort/ort-wasm-simd-threaded.js'
 const ORT_MANIFEST = '/ort/ort-wasm-simd-threaded.wasm.json'
 
 interface WasmManifest {

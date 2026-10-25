@@ -7,12 +7,15 @@
  *   public/models/{segnet,encoder,decoder}.onnx.part-*  <- reference/homr 或构建时下载，10 MB 分片
  *   public/models/{segnet,encoder,decoder}.onnx.json    <- 分片清单
  *   public/samples                                      <- reference/samples/input（复制）
- *   public/ort/ort.wasm.mjs                             <- node_modules/onnxruntime-web/dist（API）
- *   public/ort/ort-wasm-simd-threaded.mjs               <- node_modules/onnxruntime-web/dist（胶水代码）
+ *   public/ort/ort.wasm.js                              <- node_modules/onnxruntime-web/dist（API）
+ *   public/ort/ort-wasm-simd-threaded.js                <- node_modules/onnxruntime-web/dist（胶水代码）
  *   public/ort/ort-wasm-simd-threaded.wasm.*            <- 由 wasm 切成的 10 MB 分片
  *   public/ort/ort-wasm-simd-threaded.wasm.json         <- 分片清单
- *   public/verovio/verovio-module.mjs                   <- node_modules/verovio/dist（复制）
- *   public/verovio/verovio.mjs                          <- node_modules/verovio/dist（复制）
+ *   public/verovio/verovio-module.js                    <- node_modules/verovio/dist（复制）
+ *   public/verovio/verovio.js                           <- node_modules/verovio/dist（复制）
+ *
+ * 模块脚本一律落成 `.js`：EdgeOne 这类静态托管没给 `.mjs` 配 MIME，会以
+ * application/octet-stream 返回，浏览器按模块脚本加载时直接拒绝。
  *
  * reference/homr、reference/samples 不入库（见 .gitignore）。构建环境里没有
  * reference/homr 时，三个 ONNX 模型从 homr 的 GitHub Release 下载，解压后缓存在
@@ -58,8 +61,8 @@ const models = [
 /** 小文件复制：文件按字节数、目录按相对路径逐个比较，内容没变就不重写。 */
 const copies = [
   [path.join(root, 'reference/samples/input'), 'samples'],
-  [path.join(verovio, 'verovio-module.mjs'), 'verovio/verovio-module.mjs'],
-  [path.join(verovio, 'verovio.mjs'), 'verovio/verovio.mjs']
+  [path.join(verovio, 'verovio-module.mjs'), 'verovio/verovio-module.js'],
+  [path.join(verovio, 'verovio.mjs'), 'verovio/verovio.js']
 ]
 
 const listFiles = directory => fs
@@ -190,8 +193,8 @@ function prepareOrt() {
   const api = path.join(ort, 'ort.wasm.mjs')
   const target = path.join(pub, 'ort')
   const manifestPath = path.join(target, 'ort-wasm-simd-threaded.wasm.json')
-  const apiTarget = path.join(target, 'ort.wasm.mjs')
-  const glueTarget = path.join(target, 'ort-wasm-simd-threaded.mjs')
+  const apiTarget = path.join(target, 'ort.wasm.js')
+  const glueTarget = path.join(target, 'ort-wasm-simd-threaded.js')
   // 重复运行时保持现有分片，避免打断正在加载这些文件的 Worker。
   try {
     const existing = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
@@ -238,6 +241,11 @@ for (const [source, rel] of copies) {
 }
 if (missing.length > 0) {
   console.log(`警告：${missing.length} 个资产缺失（${missing.join('、')}），构建产物里不会包含它们`)
+}
+
+// 旧版本按 .mjs 落盘，部署到 EdgeOne 后模块脚本会被 MIME 检查拒绝；清掉残留。
+for (const legacy of ['verovio/verovio-module.mjs', 'verovio/verovio.mjs']) {
+  fs.rmSync(path.join(pub, legacy), { force: true })
 }
 
 await prepareModels()

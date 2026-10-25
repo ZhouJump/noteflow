@@ -2,14 +2,17 @@
  * Verovio 排版引擎：把 MusicXML 渲染成 SVG。
  *
  * 构建与 ORT 的做法一致——`scripts/prepare-assets.mjs` 把 `node_modules/verovio/dist`
- * 里的两个文件链接到 `public/verovio/`，运行时用原生 `import()` 取。这样 7 MB 的
+ * 里的两个文件复制到 `public/verovio/`，运行时用原生 `import()` 取。这样 7 MB 的
  * WASM 不经过打包器，也不会在 SSR 阶段被求值；只有真正打开曲谱页时才加载。
+ *
+ * 文件名用 `.js` 而不是原包的 `.mjs`：EdgeOne 这类静态托管没给 `.mjs` 配 MIME，
+ * 会以 `application/octet-stream` 返回，浏览器按模块脚本加载时直接拒绝。
  *
  * 引擎是单例（Verovio 只允许一个实例），渲染请求串行执行。
  */
 
-const MODULE_URL = '/verovio/verovio-module.mjs'
-const TOOLKIT_URL = '/verovio/verovio.mjs'
+const MODULE_URL = '/verovio/verovio-module.js'
+const TOOLKIT_URL = '/verovio/verovio.js'
 
 /** 页面宽度按 2100 排版；`svgViewBox` 让 SVG 跟随容器缩放。 */
 const RENDER_OPTIONS = {
