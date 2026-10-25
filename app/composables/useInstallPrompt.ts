@@ -167,8 +167,8 @@ function close(): void {
 
 const canPrompt = computed(() => deferred.value !== null)
 const steps = computed(() => ios.value
-  ? ['点浏览器的分享按钮。', '选择「添加到主屏幕」，再点「添加」。']
-  : ['点地址栏右侧的安装图标，或打开浏览器菜单。', '选择「安装 NoteFlow」或「添加到主屏幕」。'])
+  ? ['点浏览器的分享按钮。', '选「添加到主屏幕」，再点「添加」。']
+  : ['点浏览器右上角的菜单。', '选「安装 NoteFlow」或「添加到主屏幕」。'])
 
 export function useInstallPrompt() {
   onMounted(setup)

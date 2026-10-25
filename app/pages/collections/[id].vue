@@ -33,7 +33,7 @@ const seoTitle = computed(() => {
 })
 const seoDescription = computed(() => {
   const value = detail.value
-  if (value === null) return '本机谱集：查看曲谱、设置封面与整理演出顺序。'
+  if (value === null) return '谱架上的谱集：查看曲谱、设置封面与整理演出顺序。'
   return `「${value.collection.title}」谱集，共 ${value.scores.length} 首曲谱，可以设置封面、重命名与拖拽移出。`
 })
 usePageSeo(seoTitle, seoDescription)
@@ -98,7 +98,7 @@ async function load(): Promise<void> {
     const shelf = await loadCollection(collectionId.value)
     if (shelf === null) {
       detail.value = null
-      failure.value = '这个谱集不在本机，可能已被删除。'
+      failure.value = '这个谱集已经不在谱架上了，可能被删除了。'
       return
     }
     const urls = new Map<string, string>()

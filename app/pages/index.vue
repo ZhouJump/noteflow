@@ -11,7 +11,7 @@ import { installViolinPreset } from '~/lib/presets/violin'
  * 拖拽期间只更新预览与高亮，松手后才写库；取消或落空不会修改任何记录。
  * 缩略图在这里换成临时 URL，离开页面时统一回收。
  */
-usePageSeo('谱架 · NoteFlow', '本机谱架：按谱集整理曲谱，长按拖拽分组，打开曲谱即可演奏。')
+usePageSeo('谱架 · NoteFlow', '谱架：按谱集整理曲谱，长按拖拽分组，打开曲谱即可演奏。')
 
 const toast = useToast()
 
@@ -299,7 +299,7 @@ onBeforeUnmount(() => {
         color="error"
         variant="subtle"
         icon="i-lucide-triangle-alert"
-        title="无法读取本机曲谱"
+        title="无法打开谱架"
         :description="failure"
       />
 
@@ -418,7 +418,7 @@ onBeforeUnmount(() => {
         v-if="!loading && totalScores === 0"
         class="pt-6 text-sm text-muted"
       >
-        还没有曲谱。点「添加曲谱」导入图片或 MusicXML。
+        还没有曲谱。点「添加曲谱」导入图片、PDF 或 MusicXML。
       </p>
     </div>
 

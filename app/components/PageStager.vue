@@ -53,7 +53,7 @@ const statusText = computed(() => {
     return `识别完成：${pages.value.length} 页，${noteTotal.value} 个音符，${restTotal.value} 个休止符`
   }
   if (staged.value.length > 0) return `已选 ${staged.value.length} 页，可以开始识别`
-  return '等待页面'
+  return '还没有添加页面'
 })
 
 watch(() => staged.value.length, value => emit('count', value), { immediate: true })

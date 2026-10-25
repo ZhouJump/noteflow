@@ -41,7 +41,9 @@ async function render(): Promise<void> {
   } catch (exception) {
     if (current !== token) return
     rendered.value = null
-    error.value = `无法排版这份乐谱：${(exception as Error).message}`
+    // 排版器的原始异常多为英文技术信息，留给控制台。
+    console.error('乐谱排版失败', exception)
+    error.value = '这份乐谱暂时无法显示'
   } finally {
     if (current === token) loading.value = false
   }
@@ -147,7 +149,7 @@ onBeforeUnmount(() => {
       variant="subtle"
       icon="i-lucide-triangle-alert"
       :title="error"
-      description="可以切换到页面图查看，或导出 MusicXML 后用其他软件打开。"
+      description="可以导出 MusicXML 后用其他软件打开，或重新导入这份文件。"
     />
 
     <!-- eslint-disable better-tailwindcss/no-unknown-classes, vue/no-v-html -- 组件内 scoped 样式；SVG 来自本地 Verovio -->

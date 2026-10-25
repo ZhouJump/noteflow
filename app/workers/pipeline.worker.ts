@@ -27,6 +27,7 @@ import { addNotesToStaffs, combineNoteheadsWithStems } from '../lib/homr/noteDet
 import { filterPredictions } from '../lib/homr/noiseFiltering'
 import { median, pyRound } from '../lib/homr/numeric'
 import { loadOrt } from '../lib/homr/ortRuntime'
+import { RecognitionHint } from '../lib/homr/recognition'
 import type { GrayImage } from '../lib/homr/staffDewarping'
 import { toPrediction } from '../lib/homr/staffParsing'
 import { parseStaffs, type ParsedStaff } from '../lib/homr/staffParsingPipeline'
@@ -291,7 +292,9 @@ async function runPage(rgba: Uint8Array, width: number, height: number, name: st
 
   // combine_noteheads_with_stems
   const noteheadsWithStems = combineNoteheadsWithStems(noteheads, stemsRest)
-  if (noteheadsWithStems.length === 0) throw new Error('没有检测到音符头，无法识别这张图片')
+  if (noteheadsWithStems.length === 0) {
+    throw new RecognitionHint('没有在图片里找到音符，换一张更清晰的图片试试')
+  }
   const averageNoteHeadHeight = median(
     noteheadsWithStems.map(entry => entry.notehead.size[1])
   )
@@ -309,7 +312,9 @@ async function runPage(rgba: Uint8Array, width: number, height: number, name: st
 
   // detect_staff
   const staffs = detectStaff(staffImage, staffFragments, clefsKeys, barLines)
-  if (staffs.length === 0) throw new Error('没有检测到谱表，请换一张更清晰的图片')
+  if (staffs.length === 0) {
+    throw new RecognitionHint('没有在图片里找到谱表，换一张更清晰的图片试试')
+  }
   progress('staffs', staffs.length, staffs.length)
 
   const braceDot = createRotatedBoundingBoxes(
@@ -412,7 +417,9 @@ ctx.addEventListener('message', (event: MessageEvent) => {
     try {
       await runPage(new Uint8Array(data.rgba), data.width, data.height, data.name ?? 'score')
     } catch (error) {
-      ctx.postMessage({ type: 'error', message: (error as Error).message })
+      // 只有标注过的提示能上界面，其余报错（模型分片、HTTP 状态）留在控制台。
+      const hint = error instanceof RecognitionHint ? error.message : null
+      ctx.postMessage({ type: 'error', message: (error as Error).message, hint })
     }
   })()
 })

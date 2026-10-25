@@ -4,7 +4,7 @@
  *
  * 页面格子、拖动排序和保存对话框都在 PageStager 里，PDF 导入复用同一套。
  */
-usePageSeo('导入图片 · NoteFlow', '选择或拍摄多张乐谱照片，调整顺序后在本机识别成可演奏的曲谱。')
+usePageSeo('导入图片 · NoteFlow', '选择或拍摄多张乐谱照片，调整顺序后识别成可演奏的曲谱。')
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const stager = ref<{ addPages: (files: { file: Blob, name: string }[]) => void } | null>(null)

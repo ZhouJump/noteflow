@@ -31,7 +31,7 @@ async function onFile(event: Event): Promise<void> {
   if (file === undefined) return
   error.value = null
   if (file.size > 5 * 1024 * 1024) {
-    error.value = '文件超过 5 MB，请确认选择的是 MusicXML。'
+    error.value = '文件超过 5 MB，可能不是乐谱文件。'
     return
   }
   fileName.value = file.name
@@ -104,7 +104,7 @@ function openSave(): void {
           {{ fileName ? '重新选择文件' : '选择 MusicXML 文件' }}
         </span>
         <span class="max-w-xs text-xs text-muted">
-          支持 .musicxml 与 .xml，保存后可以导出原文。
+          支持 .musicxml 与 .xml 文件。
         </span>
       </button>
 

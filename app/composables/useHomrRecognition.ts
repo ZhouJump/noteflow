@@ -92,17 +92,19 @@ export function useHomrRecognition() {
         return
       }
       if (data.type === 'error') {
-        fail(data.message as string)
+        // 原始报错（英文、路径、HTTP 状态）留给控制台；Worker 标注过的提示才上界面。
+        console.error('识别任务失败', data.message)
+        fail(typeof data.hint === 'string' && data.hint !== '' ? data.hint : '识别没能完成，请重试')
       }
     })
     // Worker 脚本本身加载失败（模块解析、wasm 初始化）时不会走 message，只能靠 error 事件。
     instance.addEventListener('error', (event) => {
-      const failure = event as ErrorEvent
-      const where = failure.filename ? `（${failure.filename}:${failure.lineno}）` : ''
-      fail(`Worker 加载失败：${failure.message || '脚本无法执行'}${where}`)
+      // 具体文件名与行号留给控制台，界面上只说用户能做的事。
+      console.error('识别任务加载失败', event)
+      fail('识别没能启动，刷新页面后再试一次')
     })
     instance.addEventListener('messageerror', () => {
-      fail('Worker 无法解析主线程发来的数据')
+      fail('识别中途出了点问题，请重试')
     })
     worker.value = instance
     return instance
@@ -134,7 +136,7 @@ export function useHomrRecognition() {
       canvas.width = bitmap.width
       canvas.height = bitmap.height
       const context = canvas.getContext('2d', { willReadFrequently: true })
-      if (!context) throw new Error('无法创建 2D 画布')
+      if (!context) throw new Error('这张图片打不开，换一张试试')
       context.drawImage(bitmap, 0, 0)
       return context.getImageData(0, 0, bitmap.width, bitmap.height)
     } finally {
@@ -202,7 +204,11 @@ export function useHomrRecognition() {
         pages.value = [...pages.value, { source: input.file, fileName: input.name, result: output, processed }]
         preview.value = null
       } catch (exception) {
-        error.value = (exception as Error).message
+        // fail() 已经把可读原因写进 error；图片解码等底层异常只给一句通用提示。
+        if (error.value === null) {
+          console.error('识别失败', exception)
+          error.value = '这一页没能识别，换一张图片再试'
+        }
         running.value = false
         return
       }

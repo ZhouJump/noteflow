@@ -1186,6 +1186,38 @@ try {
   check('谱集页列出两首曲谱', memberCards === 2, `${memberCards} 首`)
   await screenshot('collection-page.png')
 
+  // ---- 曲谱页返回：从谱集打开就回谱集 ----
+  const collectionPath = await evaluate('location.pathname')
+  const memberHref = await evaluate(
+    'document.querySelector(\'[data-test="collection-score"]\')?.getAttribute(\'href\') ?? \'\''
+  )
+  await open(memberHref)
+  await waitFor(
+    () => evaluate('Boolean(document.querySelector(\'[data-test="page-title"]\'))'),
+    30_000,
+    'member score page'
+  )
+  const memberBack = await evaluate(`(() => {
+    const link = document.querySelector('header a[aria-label^="返回"]')
+    return link ? { href: link.getAttribute('href'), label: link.getAttribute('aria-label') } : null
+  })()`)
+  check(
+    '谱集里的曲谱返回指向谱集',
+    memberBack?.href === collectionPath && memberBack?.label === '返回谱集',
+    memberBack === null ? '未找到返回按钮' : `${memberBack.label} → ${memberBack.href}`
+  )
+  await click('header a[aria-label^="返回"]')
+  await waitFor(
+    () => evaluate('location.pathname').then(value => (value === collectionPath ? value : '')),
+    30_000,
+    'back to collection'
+  )
+  await waitFor(
+    async () => (await count('[data-test="collection-score"]')) === 2,
+    30_000,
+    'collection restored'
+  )
+
   // ---- 谱集编辑：封面与名称都在对话框里 ----
   await click('[data-test="collection-edit"]')
   await waitFor(

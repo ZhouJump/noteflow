@@ -86,7 +86,7 @@ function upgrade(database: IDBDatabase, transaction: IDBTransaction | null): voi
 
 /** 打开数据库；失败后允许下次重试（例如用户清理存储后）。 */
 export function openDatabase(): Promise<IDBDatabase> {
-  if (!import.meta.client) return Promise.reject(new Error('IndexedDB 只在浏览器里可用'))
+  if (!import.meta.client) return Promise.reject(new Error('本地数据只能在浏览器里打开'))
   if (connection !== null) return connection
   connection = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION)
@@ -96,8 +96,8 @@ export function openDatabase(): Promise<IDBDatabase> {
       database.onversionchange = () => database.close()
       resolve(database)
     }
-    request.onerror = () => reject(request.error ?? new Error('无法打开本地数据库'))
-    request.onblocked = () => reject(new Error('本地数据库被其他标签页占用，请关闭后重试'))
+    request.onerror = () => reject(request.error ?? new Error('打不开本地数据，刷新页面后再试'))
+    request.onblocked = () => reject(new Error('应用已经在另一个标签页打开了，关掉那边再试'))
   }).catch((error: unknown) => {
     connection = null
     throw error
@@ -108,7 +108,7 @@ export function openDatabase(): Promise<IDBDatabase> {
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error ?? new Error('IndexedDB 请求失败'))
+    request.onerror = () => reject(request.error ?? new Error('读取本地数据失败'))
   })
 }
 
@@ -149,8 +149,8 @@ export async function writeBatch(writes: StoreWrite[]): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(names, 'readwrite')
     transaction.oncomplete = () => resolve()
-    transaction.onerror = () => reject(transaction.error ?? new Error('写入本地数据库失败'))
-    transaction.onabort = () => reject(transaction.error ?? new Error('写入已回滚'))
+    transaction.onerror = () => reject(transaction.error ?? new Error('保存失败，请再试一次'))
+    transaction.onabort = () => reject(transaction.error ?? new Error('保存到一半失败了，请再试一次'))
     try {
       for (const write of writes) {
         const store = transaction.objectStore(write.store)
@@ -177,7 +177,7 @@ export async function deleteBatch(deletes: StoreDelete[]): Promise<void> {
     const transaction = database.transaction(names, 'readwrite')
     transaction.oncomplete = () => resolve()
     transaction.onerror = () => reject(transaction.error ?? new Error('删除失败'))
-    transaction.onabort = () => reject(transaction.error ?? new Error('删除已回滚'))
+    transaction.onabort = () => reject(transaction.error ?? new Error('删除到一半失败了，请再试一次'))
     try {
       for (const entry of pending) {
         const store = transaction.objectStore(entry.store)
@@ -203,8 +203,8 @@ export async function writeAndDeleteBatch(writes: StoreWrite[], deletes: StoreDe
   return new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(names, 'readwrite')
     transaction.oncomplete = () => resolve()
-    transaction.onerror = () => reject(transaction.error ?? new Error('写入本地数据库失败'))
-    transaction.onabort = () => reject(transaction.error ?? new Error('写入已回滚'))
+    transaction.onerror = () => reject(transaction.error ?? new Error('保存失败，请再试一次'))
+    transaction.onabort = () => reject(transaction.error ?? new Error('保存到一半失败了，请再试一次'))
     try {
       for (const write of pendingWrites) {
         const store = transaction.objectStore(write.store)

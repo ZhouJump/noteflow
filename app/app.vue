@@ -25,7 +25,7 @@ useHead({
 })
 
 const title = 'NoteFlow · 乐谱识别与演奏辅助'
-const description = '拍摄或导入乐谱，在浏览器本地完成识别，跟踪演奏进度并提供练习与评分。'
+const description = '拍摄或导入纸质乐谱，识别成可演奏的曲谱，跟着练习并给演奏打分。'
 
 useSeoMeta({
   title,

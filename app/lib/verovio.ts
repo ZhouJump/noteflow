@@ -45,7 +45,7 @@ let toolkit: Promise<VerovioToolkit> | null = null
 let queue: Promise<unknown> = Promise.resolve()
 
 export function loadVerovioToolkit(): Promise<VerovioToolkit> {
-  if (!import.meta.client) return Promise.reject(new Error('Verovio 只在浏览器里加载'))
+  if (!import.meta.client) return Promise.reject(new Error('乐谱排版需要在浏览器里进行'))
   toolkit ??= (async () => {
     const factory = (await import(/* @vite-ignore */ MODULE_URL)).default as ModuleFactory
     const wrapper = (await import(/* @vite-ignore */ TOOLKIT_URL)) as {
@@ -91,8 +91,9 @@ export function renderMusicXml(xml: string): Promise<RenderedScore> {
     const verovio = await loadVerovioToolkit()
     verovio.setOptions(RENDER_OPTIONS)
     if (verovio.loadData(xml) === 0) {
-      const warnings = readWarnings(verovio.getLog())
-      throw new Error(warnings[0] ?? 'Verovio 无法解析这份 MusicXML')
+      // 排版器的原始告警是英文技术细节，留给控制台。
+      console.warn('乐谱排版失败', readWarnings(verovio.getLog()))
+      throw new Error('这份乐谱内容有误，暂时无法显示')
     }
     const pages = Math.max(1, verovio.getPageCount())
     const parts: string[] = []

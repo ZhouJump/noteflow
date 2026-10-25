@@ -351,8 +351,8 @@ export async function deleteScore(scoreId: string): Promise<void> {
 export function describeStorageError(error: unknown): string {
   const name = (error as { name?: string } | null)?.name ?? ''
   if (name === 'QuotaExceededError') {
-    return '本机存储空间不足：请删除部分曲谱或清理浏览器数据后重试'
+    return '存储空间不够了：先删除一些曲谱，或清理浏览器的网站数据再试'
   }
   if (error instanceof Error) return error.message
-  return '本地保存失败'
+  return '保存失败，请再试一次'
 }

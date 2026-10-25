@@ -2,7 +2,7 @@
 /**
  * 导入入口：只列真实可用的三条链路（图片、PDF、MusicXML）。
  */
-usePageSeo('导入乐谱 · NoteFlow', '从相册图片、PDF 或 MusicXML 导入曲谱，识别全部在本机完成，不会上传。')
+usePageSeo('导入乐谱 · NoteFlow', '从相册图片、PDF 或 MusicXML 导入曲谱，全程在设备上识别，不会上传。')
 
 const entries = [
   {
@@ -61,7 +61,7 @@ const entries = [
     </div>
 
     <p class="mx-auto max-w-2xl px-4 pt-6 text-xs text-muted">
-      文件只在本机处理，不会上传。
+      文件只在你的设备上处理，不会上传。
     </p>
   </div>
 </template>

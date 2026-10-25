@@ -106,7 +106,7 @@ export function usePractice(
   async function listen(token: number): Promise<void> {
     const media = navigator.mediaDevices
     if (media === undefined) {
-      throw new Error('当前浏览器不支持麦克风。请通过 HTTPS 或 localhost 打开。')
+      throw new Error('这个页面用不了麦克风。请安装成应用后打开，或换一个浏览器试试。')
     }
 
     const audioContext = new AudioContext({ latencyHint: 'interactive' })

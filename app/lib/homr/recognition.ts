@@ -99,15 +99,22 @@ export interface PagePreview {
   }
 }
 
+/**
+ * Worker 里可预期的失败（例如图片里没有谱表）。
+ * 消息本身就是给用户的说明，可以原样上界面；其它异常只写控制台。
+ */
+export class RecognitionHint extends Error {}
+
 export type RecognitionStage = 'preprocess' | 'segnet' | 'symbols' | 'staffs' | 'transformer' | 'musicxml'
 
+/** 识别阶段面向用户的说法：不出现模型与框架名称。 */
 export const STAGE_LABELS: Record<RecognitionStage, string> = {
-  preprocess: '预处理',
-  segnet: 'SegNet 分割',
-  symbols: '符号与谱表检测',
-  staffs: '谱表合并',
-  transformer: 'Transformer 识别',
-  musicxml: '生成 MusicXML'
+  preprocess: '整理页面',
+  segnet: '找谱表',
+  symbols: '找音符',
+  staffs: '对齐谱表',
+  transformer: '识别音符',
+  musicxml: '整理曲谱'
 }
 
 /** 各阶段大致的墙钟占比，用来合成一根总进度条。 */

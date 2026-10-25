@@ -72,7 +72,7 @@ export function quartersForType(type: string): number | null {
 export function sanitiseMusicXml(source: string): string {
   const text = source.replace(/^\uFEFF/, '')
   if (/<!ENTITY/i.test(text)) {
-    throw new MusicXmlError('文件包含实体声明，出于安全考虑不予解析')
+    throw new MusicXmlError('这个文件里有无法安全读取的内容，暂时不能导入')
   }
   return text.replace(/<!DOCTYPE[^[>]*(\[[\s\S]*?\])?[^>]*>/i, '')
 }
@@ -80,18 +80,18 @@ export function sanitiseMusicXml(source: string): string {
 /** 解析成 DOM；根元素不是 `score-partwise` 时给出明确原因。 */
 export function parseMusicXml(source: string): Document {
   const text = sanitiseMusicXml(source)
-  if (text.trim() === '') throw new MusicXmlError('MusicXML 内容为空')
+  if (text.trim() === '') throw new MusicXmlError('文件是空的，可能没有下载完整')
   const document = new DOMParser().parseFromString(text, 'application/xml')
   if (document.querySelector('parsererror') !== null) {
-    throw new MusicXmlError('XML 结构无法解析，请确认文件是完整的 MusicXML')
+    throw new MusicXmlError('文件内容不完整或已损坏，读不出来')
   }
   const root = document.documentElement
-  if (root === null) throw new MusicXmlError('MusicXML 没有根元素')
+  if (root === null) throw new MusicXmlError('文件里没有找到乐谱内容')
   if (root.nodeName === 'score-timewise') {
-    throw new MusicXmlError('暂不支持 score-timewise（按时间排列）格式，请导出为 score-partwise')
+    throw new MusicXmlError('暂不支持这种排列方式的乐谱，请在导出时选择按小节排列')
   }
   if (root.nodeName !== 'score-partwise') {
-    throw new MusicXmlError(`不支持的根元素 <${root.nodeName}>，需要 <score-partwise>`)
+    throw new MusicXmlError('这不是一份可用的乐谱文件')
   }
   return document
 }

@@ -52,6 +52,15 @@ const seoDescription = computed(() => {
 })
 usePageSeo(seoTitle, seoDescription)
 
+// 返回跟着曲谱归属走：谱集里的曲谱回谱集，独立曲谱回谱架；刷新或直接打开也一致。
+const backTarget = computed(() => {
+  const collectionId = detail.value?.score.collectionId ?? null
+  return collectionId === null ? '/' : `/collections/${collectionId}`
+})
+const backLabel = computed(() =>
+  (detail.value?.score.collectionId ?? null) === null ? '返回谱架' : '返回谱集'
+)
+
 const selectedIndex = ref<number | null>(null)
 const tool = ref<'pen' | 'eraser' | null>(null)
 const persistError = ref<string | null>(null)
@@ -615,7 +624,7 @@ async function load(): Promise<void> {
   try {
     const value = await loadScoreDetail(scoreId.value)
     if (value === null) {
-      failure.value = '这份曲谱不在本机存储里，可能已被删除。'
+      failure.value = '这份曲谱已经不在谱架上了，可能被删除了。'
       return
     }
     detail.value = value
@@ -776,8 +785,8 @@ const menuItems = computed(() => [
     <template v-else-if="detail">
       <PageHeader
         :title="detail.score.title"
-        back="/"
-        back-label="返回谱架"
+        :back="backTarget"
+        :back-label="backLabel"
         wide
       >
         <template #center>
@@ -979,7 +988,7 @@ const menuItems = computed(() => [
       <ConfirmDialog
         v-model:open="deleteOpen"
         title="删除曲谱"
-        :description="`删除「${detail.score.title}」？本机上的页面图片、识别结果、批注与成绩会一起删除。`"
+        :description="`删除「${detail.score.title}」？这份曲谱的页面、批注和成绩会一起删除。`"
         confirm-label="删除"
         confirm-color="error"
         :loading="deleting"

@@ -626,6 +626,21 @@ async function runBrowserChecks() {
     check('评分进度显示总音数', total.includes('/ 8'), total)
     await screenshot('scoring-waiting.png')
 
+    for (let step = 0; step < 25; step += 1) {
+      const diag = await evaluate(`(async () => ({
+        phase: document.querySelector('[data-test="score-panel"]')?.dataset.phase ?? '',
+        status: document.querySelector('[data-test="score-status"]')?.textContent?.trim() ?? '',
+        progress: document.querySelector('[data-test="score-progress"]')?.textContent?.trim() ?? '',
+        error: document.querySelector('[data-test="score-error"]')?.textContent?.trim() ?? '',
+        visibility: document.visibilityState,
+        mic: window.__nfMic,
+        result: Boolean(document.querySelector('[data-test="score-result"]'))
+      }))()`)
+      console.log('[diag]', step, JSON.stringify(diag))
+      if (diag.result) break
+      await sleep(1000)
+    }
+
     await waitFor(
       () => evaluate('Boolean(document.querySelector(\'[data-test="score-result"]\'))'),
       30_000,

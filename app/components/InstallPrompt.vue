@@ -31,8 +31,8 @@ function onOpenChange(open: boolean): void {
       >
         <p class="text-sm text-muted">
           {{ canPrompt
-            ? '安装后从桌面或主屏幕直接打开，以独立窗口运行，不再显示浏览器地址栏。'
-            : '当前浏览器还没有开放一键安装，可以按下面的步骤手动添加。' }}
+            ? '装好后从桌面或主屏幕直接打开，界面清爽，也不用每次输入网址。'
+            : '这个浏览器需要手动添加，按下面的步骤操作就行。' }}
         </p>
         <ol
           v-if="!canPrompt"
