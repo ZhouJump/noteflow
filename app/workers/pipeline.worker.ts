@@ -8,7 +8,7 @@
  * 页面坐标（模型看到的 1920px 宽图像），`scale` 负责换算回用户所选图片的像素。
  */
 
-import * as ort from 'onnxruntime-web/wasm'
+import type * as ort from 'onnxruntime-web/wasm'
 
 import { clahe, grayFromRgb, resizeBicubic } from '../lib/imageops.js'
 import {
@@ -26,15 +26,12 @@ import { generateMusicXmlString } from '../lib/homr/musicXmlGenerator'
 import { addNotesToStaffs, combineNoteheadsWithStems } from '../lib/homr/noteDetection'
 import { filterPredictions } from '../lib/homr/noiseFiltering'
 import { median, pyRound } from '../lib/homr/numeric'
+import { loadOrt } from '../lib/homr/ortRuntime'
 import type { GrayImage } from '../lib/homr/staffDewarping'
 import { toPrediction } from '../lib/homr/staffParsing'
 import { parseStaffs, type ParsedStaff } from '../lib/homr/staffParsingPipeline'
 import { breakWideFragments, detectStaff } from '../lib/homr/staffDetection'
 import type { EncodedSymbol } from '../lib/homr/vocabulary'
-
-/** ORT 运行时由 `scripts/prepare-assets.mjs` 链接到 `public/ort/`。 */
-const ORT_WASM = '/ort/ort-wasm-simd-threaded.wasm'
-const ORT_MJS = '/ort/ort-wasm-simd-threaded.mjs'
 
 type WorkerScope = {
   postMessage(message: unknown, transfer?: Transferable[]): void
@@ -42,11 +39,6 @@ type WorkerScope = {
 }
 
 const ctx = self as unknown as WorkerScope
-
-ort.env.logLevel = 'error'
-ort.env.wasm.simd = true
-ort.env.wasm.numThreads = Math.max(1, Math.min(8, navigator.hardwareConcurrency || 1))
-ort.env.wasm.wasmPaths = { wasm: ORT_WASM, mjs: ORT_MJS }
 
 const PAGE_WIDTH = 1920
 const WIN = 320
@@ -62,10 +54,11 @@ function session(name: 'segnet' | 'encoder' | 'decoder'): Promise<ort.InferenceS
   let cached = sessions.get(name)
   if (!cached) {
     cached = (async () => {
+      const runtime = await loadOrt()
       const response = await fetch(`/models/${name}.onnx`)
       if (!response.ok) throw new Error(`${name}.onnx: HTTP ${response.status}`)
       const bytes = await response.arrayBuffer()
-      return ort.InferenceSession.create(bytes, {
+      return runtime.InferenceSession.create(bytes, {
         executionProviders: ['wasm'],
         graphOptimizationLevel: 'all'
       })
@@ -155,6 +148,8 @@ async function runPage(rgba: Uint8Array, width: number, height: number, name: st
 
   // SegNet: every tile is stored back as a soft score so the overlap averages out.
   const t1 = performance.now()
+  // 首个 session 之前先把 ORT 与分片 wasm 准备好，耗时计入 modelLoad。
+  const runtime = await loadOrt()
   const segnet = await session('segnet')
   const inputName = segnet.inputNames[0]
   const outputName = segnet.outputNames[0]
@@ -183,7 +178,7 @@ async function runPage(rgba: Uint8Array, width: number, height: number, name: st
       }
 
       const out = await segnet.run({
-        [inputName]: new ort.Tensor('float32', patch, [1, 3, WIN, WIN])
+        [inputName]: new runtime.Tensor('float32', patch, [1, 3, WIN, WIN])
       })
       const scores = out[outputName].data as Float32Array
       for (let c = 0; c < CLASSES; c += 1) {
@@ -370,7 +365,7 @@ async function runPage(rgba: Uint8Array, width: number, height: number, name: st
       total: performance.now() - started
     },
     runtime: {
-      threads: ort.env.wasm.numThreads,
+      threads: runtime.env.wasm.numThreads,
       crossOriginIsolated: (self as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated === true,
       hardwareConcurrency: navigator.hardwareConcurrency
     }

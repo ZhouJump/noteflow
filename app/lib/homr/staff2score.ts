@@ -13,8 +13,9 @@
  * reported for the overlay and never used to decide the music.
  */
 
-import * as ort from 'onnxruntime-web/wasm'
+import type * as OrtTypes from 'onnxruntime-web/wasm'
 
+import { currentOrt, type OrtModule } from './ortRuntime'
 import type { GrayImage } from './staffDewarping'
 import { EncodedSymbol, Vocabulary } from './vocabulary'
 
@@ -32,8 +33,8 @@ const DECODER_HEAD_DIM = 64
 const CACHE_TENSORS = 32
 
 export interface TransformerSessions {
-  encoder: ort.InferenceSession
-  decoder: ort.InferenceSession
+  encoder: OrtTypes.InferenceSession
+  decoder: OrtTypes.InferenceSession
 }
 
 const vocabulary = new Vocabulary()
@@ -52,7 +53,7 @@ function detokenize(head: keyof typeof inverse, id: number): string {
 }
 
 /** Greedy argmax of the last position of a decoder output. */
-function argmaxLast(tensor: ort.Tensor): number {
+function argmaxLast(tensor: OrtTypes.Tensor): number {
   const data = tensor.data as Float32Array
   const stride = tensor.dims[tensor.dims.length - 1]
   const base = data.length - stride
@@ -63,7 +64,7 @@ function argmaxLast(tensor: ort.Tensor): number {
   return best
 }
 
-function toInputTensor(canvas: GrayImage): ort.Tensor {
+function toInputTensor(canvas: GrayImage, ort: OrtModule): OrtTypes.Tensor {
   if (canvas.width !== TR_OMR_WIDTH || canvas.height !== TR_OMR_HEIGHT) {
     throw new Error(
       `staff canvas is ${canvas.width}x${canvas.height}, expected ${TR_OMR_WIDTH}x${TR_OMR_HEIGHT}`
@@ -85,13 +86,14 @@ export async function predictStaffSymbols(
   canvas: GrayImage,
   sessions: TransformerSessions
 ): Promise<EncodedSymbol[]> {
+  const ort = currentOrt()
   const { encoder, decoder } = sessions
   const encoded = await encoder.run({
-    [encoder.inputNames[0]]: toInputTensor(canvas)
+    [encoder.inputNames[0]]: toInputTensor(canvas, ort)
   })
   const context = encoded[encoder.outputNames[0]]
 
-  let cache: ort.Tensor[] = []
+  let cache: OrtTypes.Tensor[] = []
   for (let i = 0; i < CACHE_TENSORS; i += 1) {
     cache.push(new ort.Tensor('float32', new Float32Array(0), [1, DECODER_HEADS, 0, DECODER_HEAD_DIM]))
   }
@@ -109,7 +111,7 @@ export async function predictStaffSymbols(
   )
 
   for (let step = 0; step < MAX_SEQ_LEN; step += 1) {
-    const feeds: Record<string, ort.Tensor> = {
+    const feeds: Record<string, OrtTypes.Tensor> = {
       rhythms: new ort.Tensor('int64', BigInt64Array.from([BigInt(rhythm[rhythm.length - 1])]), [1, 1]),
       pitchs: new ort.Tensor('int64', BigInt64Array.from([BigInt(pitch[pitch.length - 1])]), [1, 1]),
       lifts: new ort.Tensor('int64', BigInt64Array.from([BigInt(lift[lift.length - 1])]), [1, 1]),

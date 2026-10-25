@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "assets": "node scripts/prepare-assets.mjs",
-    "build": "node scripts/prepare-assets.mjs && nuxt build",
+    "build": "node scripts/prepare-assets.mjs && nuxt build && node scripts/check-bundle-size.mjs",
     "dev": "node scripts/prepare-assets.mjs && nuxt dev",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
@@ -13,7 +13,8 @@
     "check:recognition": "node scripts/check-recognition.mjs",
     "check:score": "node scripts/check-score.mjs",
     "check:tracker": "node scripts/check-tracker.mjs",
-    "check:practice": "node scripts/check-practice.mjs"
+    "check:practice": "node scripts/check-practice.mjs",
+    "check:size": "node scripts/check-bundle-size.mjs"
   },
   "dependencies": {
     "@iconify-json/lucide": "^1.2.145",
