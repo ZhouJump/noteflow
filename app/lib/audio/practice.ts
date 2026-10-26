@@ -7,6 +7,7 @@
  * - 只按时间向前推进；只匹配当前目标，不向前搜索，漏掉的音必须重新演奏或手动定位。
  * - 同一拍点按手分组：双手谱要求两只手都在时间窗内各演奏一个音才推进。
  * - 同一个音高持续发声只算一次；重新起音需要静音或音高变化。
+ * - 揉弦造成的半音内抖动不算换音，见 `midiWithHysteresis`。
  * - 八度等价匹配单独计数：单音检测偶尔把基频判成泛音，练习模式仍推进但会提示。
  */
 
@@ -28,6 +29,16 @@ const STEP_SEMITONES: Record<string, number> = {
 /** 频率转 MIDI（可能带小数）：440Hz → 69。 */
 export function midiForFrequency(frequency: number): number {
   return A4_MIDI + 12 * Math.log2(frequency / A4_FREQUENCY)
+}
+
+/**
+ * 带滞回的音高量化：揉弦会在半音边界反复抖动，贴着当前半音就不会每帧都算换音。
+ * 只有偏离超过大半个半音才跳到新的音，真正换音仍能立即识别。
+ */
+export function midiWithHysteresis(frequency: number, current: number | null): number {
+  const raw = midiForFrequency(frequency)
+  if (current !== null && Math.abs(raw - current) <= 0.7) return current
+  return Math.round(raw)
 }
 
 /** MIDI 转频率：69 → 440Hz。 */
@@ -210,10 +221,10 @@ export interface PracticeTrackerOptions {
 }
 
 const DEFAULT_OPTIONS: PracticeTrackerOptions = {
-  stableFrames: 4,
-  minClarity: 0.8,
-  minRms: 0.008,
-  releaseRms: 0.004,
+  stableFrames: 3,
+  minClarity: 0.7,
+  minRms: 0.003,
+  releaseRms: 0.0015,
   handWindowMs: 1500,
   staleMs: 4000
 }
@@ -282,7 +293,7 @@ export class PracticeTracker {
       return this.report('quiet')
     }
 
-    const midi = Math.round(midiForFrequency(frequency))
+    const midi = midiWithHysteresis(frequency, this.runMidi)
     if (midi !== this.runMidi) {
       this.runMidi = midi
       this.runFrames = 1

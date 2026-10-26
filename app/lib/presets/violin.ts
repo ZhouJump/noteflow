@@ -6,10 +6,11 @@
  * 即使用户删掉谱集也不会再出现；清除浏览器数据后重新导入。
  *
  * 导入后与用户自己识别的曲谱没有区别：页面、缩略图、识别记录都在同一套 store 里，
- * 编辑、跟随、评分与批注照常可用。
+ * 编辑、跟随、评分与批注照常可用。双谱表的曲目（独奏加钢琴伴奏）默认只跟随上方
+ * 旋律，想带着伴奏一起练时在声部筛选里打开另一只手即可。
  */
 
-import { getRecord, writeBatch } from '~/lib/db/database'
+import { getAllByIndex, getAllRecords, getRecord, writeBatch } from '~/lib/db/database'
 import { makeThumbnail } from '~/lib/db/images'
 import type {
   AssetRecord,
@@ -17,13 +18,17 @@ import type {
   PageRecord,
   RecognitionRecord,
   RecognitionSidecar,
-  ScoreRecord
+  ScoreRecord,
+  ScoreSettingsRecord
 } from '~/lib/db/schema'
+import { defaultScoreSettings } from '~/lib/db/settings'
 import { readMusicXmlSource } from '~/lib/musicxml/document'
 
 const BASE = '/presets/violin'
 const COLLECTION_ID = 'preset-violin-classics'
 const DONE_KEY = 'noteflow:preset:violin:v1'
+/** 双谱表曲目的声部默认值只补一次；导入完成标记仍用 DONE_KEY，删掉的谱集不会回来。 */
+const HANDS_KEY = 'noteflow:preset:violin:hands'
 /** 验收脚本写入 1，跳过自带曲集，保证干净库的断言不被影响。 */
 export const PRESET_SKIP_KEY = 'noteflow:preset:off'
 
@@ -78,6 +83,57 @@ function statusFor(noteCount: number, withoutPosition: number): ScoreRecord['rec
   return withoutPosition > 0 ? 'needsReview' : 'completed'
 }
 
+interface ScoreShape {
+  /** 有第二谱表：小提琴曲集里这种曲目是独奏加钢琴伴奏。 */
+  twoStaves: boolean
+  timeSignature: { beats: number, beatType: number } | null
+}
+
+/** 从一页或多页 MusicXML 里读出拍号和第二谱表；解析失败的页跳过。 */
+function scoreShape(sources: string[]): ScoreShape {
+  let twoStaves = false
+  let timeSignature: { beats: number, beatType: number } | null = null
+  for (const source of sources) {
+    try {
+      const parsed = readMusicXmlSource(source)
+      timeSignature ??= parsed.timeSignature
+      twoStaves ||= parsed.notes.some(note => note.staff > 1)
+    } catch {
+      // 个别页解析失败不影响其余页的判断。
+    }
+  }
+  return { twoStaves, timeSignature }
+}
+
+/** 双谱表曲目的默认声部：只跟随上方旋律；用户自己保存过设置就保持原样。 */
+function soloSettings(scoreId: string, shape: ScoreShape): ScoreSettingsRecord | null {
+  if (!shape.twoStaves) return null
+  return { ...defaultScoreSettings(scoreId, shape.timeSignature), handMode: 'right' }
+}
+
+/**
+ * 给更新前已经装好的曲集补上双谱表默认声部。不碰已有设置，失败时下次再补；
+ * 不用 DONE_KEY，避免把用户删掉的谱集又装回来。
+ */
+async function applySoloHandDefaults(): Promise<void> {
+  try {
+    const scores = await getAllRecords<ScoreRecord>('scores')
+    const settings: ScoreSettingsRecord[] = []
+    for (const score of scores) {
+      if (score.collectionId !== COLLECTION_ID) continue
+      if (await getRecord<ScoreSettingsRecord>('settings', score.id) !== undefined) continue
+      const recognitions = await getAllByIndex<RecognitionRecord>('recognitions', 'byScore', score.id)
+      const shape = scoreShape(recognitions.map(record => record.musicXml))
+      const value = soloSettings(score.id, shape)
+      if (value !== null) settings.push(value)
+    }
+    if (settings.length > 0) await writeBatch([{ store: 'settings', records: settings }])
+    localStorage.setItem(HANDS_KEY, '1')
+  } catch {
+    // 旧曲谱读不到时下次再试，不影响打开谱架。
+  }
+}
+
 /**
  * 首次打开谱架时安装自带曲集。失败（离线、资产缺失）不写完成标记，下次再试；
  * 已导入过或验收要求跳过时直接返回 false。
@@ -86,6 +142,7 @@ export async function installViolinPreset(): Promise<boolean> {
   if (!import.meta.client) return false
   try {
     if (localStorage.getItem(PRESET_SKIP_KEY) === '1') return false
+    if (localStorage.getItem(HANDS_KEY) === null) await applySoloHandDefaults()
     if (localStorage.getItem(DONE_KEY) !== null) return false
     if (await getRecord<CollectionRecord>('collections', COLLECTION_ID) !== undefined) {
       localStorage.setItem(DONE_KEY, '1')
@@ -98,6 +155,7 @@ export async function installViolinPreset(): Promise<boolean> {
     const pages: PageRecord[] = []
     const assets: AssetRecord[] = []
     const recognitions: RecognitionRecord[] = []
+    const scoreSettings: ScoreSettingsRecord[] = []
 
     const coverBlob = await fetchBlob(`${BASE}/${manifest.cover}`).catch(() => null)
     const coverAssetId = coverBlob === null ? null : `${COLLECTION_ID}-cover`
@@ -196,6 +254,8 @@ export async function installViolinPreset(): Promise<boolean> {
         createdAt: now + scoreIndex,
         updatedAt: now + scoreIndex
       })
+      const solo = soloSettings(entry.id, scoreShape(entry.pages.map(page => page.recognition.musicXml)))
+      if (solo !== null) scoreSettings.push(solo)
     }
 
     const collection: CollectionRecord = {
@@ -212,9 +272,11 @@ export async function installViolinPreset(): Promise<boolean> {
       { store: 'scores', records: scores },
       { store: 'pages', records: pages },
       { store: 'assets', records: assets },
-      { store: 'recognitions', records: recognitions }
+      { store: 'recognitions', records: recognitions },
+      { store: 'settings', records: scoreSettings }
     ])
     localStorage.setItem(DONE_KEY, '1')
+    localStorage.setItem(HANDS_KEY, '1')
     return true
   } catch {
     return false

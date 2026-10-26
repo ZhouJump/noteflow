@@ -36,7 +36,7 @@ export interface PracticeSnapshot {
   error: string | null
 }
 
-/** 每 60ms 取一帧，和跟踪器的稳定帧数配合，约 240ms 确认一个音。 */
+/** 每 60ms 取一帧，和跟踪器的稳定帧数配合，约 180ms 确认一个音。 */
 const FRAME_MS = 60
 
 export function usePractice(
@@ -139,9 +139,10 @@ export function usePractice(
 
     const { PitchDetector } = await import('pitchy')
     const detector = PitchDetector.forFloat32Array(analyser.fftSize)
-    // 峰值挑选放宽，清晰度由跟踪器自己的阈值判断。
+    // 峰值挑选和音量门槛都放宽：小提琴、手机麦克风的音量常常偏小，
+    // 真正的判断交给跟踪器的清晰度和音量阈值。
     detector.clarityThreshold = 0.5
-    detector.minVolumeDecibels = -50
+    detector.minVolumeDecibels = -60
 
     const frame = new Float32Array(analyser.fftSize)
     running = true

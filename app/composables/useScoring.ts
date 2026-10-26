@@ -103,8 +103,6 @@ export function useScoring(
 
   /** 打开麦克风并开始取帧；token 丢弃已经被停止或替换的会话。 */
   async function listen(token: number): Promise<void> {
-    const debug = { stage: 'listen', frames: 0, rms: 0, clarity: 0, frequency: 0 }
-    ;(window as unknown as { __nfMic?: unknown }).__nfMic = debug
     const media = navigator.mediaDevices
     if (media === undefined) {
       throw new Error('这个页面用不了麦克风。请安装成应用后打开，或换一个浏览器试试。')
@@ -112,9 +110,7 @@ export function useScoring(
 
     const audioContext = new AudioContext({ latencyHint: 'interactive' })
     context = audioContext
-    debug.stage = 'resume'
     await audioContext.resume()
-    debug.stage = 'resumed'
     if (token !== generation) {
       void audioContext.close().catch(() => {})
       return
@@ -127,7 +123,6 @@ export function useScoring(
         autoGainControl: false
       }
     })
-    debug.stage = 'stream'
     if (token !== generation) {
       for (const track of audio.getTracks()) track.stop()
       return
@@ -142,11 +137,12 @@ export function useScoring(
 
     const { PitchDetector } = await import('pitchy')
     const detector = PitchDetector.forFloat32Array(analyser.fftSize)
+    // 峰值挑选和音量门槛都放宽：小提琴、手机麦克风的音量常常偏小，
+    // 真正的判断交给跟踪器的清晰度和音量阈值。
     detector.clarityThreshold = 0.5
-    detector.minVolumeDecibels = -50
+    detector.minVolumeDecibels = -60
 
     const frame = new Float32Array(analyser.fftSize)
-    debug.stage = 'tick'
     runningLoop = true
     const tick = (): void => {
       if (!runningLoop || tracker === null || token !== generation) return
@@ -157,10 +153,6 @@ export function useScoring(
       }
       const rms = Math.sqrt(energy / frame.length)
       const [frequency, clarity] = detector.findPitch(frame, audioContext.sampleRate)
-      debug.frames += 1
-      debug.rms = rms
-      debug.clarity = clarity
-      debug.frequency = frequency
       const usable = frequency > 0 ? frequency : null
       const state = tracker.push({
         frequency: usable,

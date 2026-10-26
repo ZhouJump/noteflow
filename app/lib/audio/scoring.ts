@@ -10,8 +10,8 @@
  */
 
 import {
-  midiForFrequency,
   midiLabel,
+  midiWithHysteresis,
   type PitchFrame,
   type PracticeTarget
 } from './practice'
@@ -91,9 +91,9 @@ export interface ScoringOptions {
 const DEFAULT_OPTIONS: ScoringOptions = {
   bpm: 80,
   stableFrames: 3,
-  minClarity: 0.8,
-  minRms: 0.008,
-  releaseRms: 0.004,
+  minClarity: 0.7,
+  minRms: 0.003,
+  releaseRms: 0.0015,
   matchWindowMs: 650,
   missWindowMs: 500
 }
@@ -500,7 +500,7 @@ export class ScoreTracker {
       return null
     }
 
-    const midi = Math.round(midiForFrequency(frequency))
+    const midi = midiWithHysteresis(frequency, this.runMidi)
     if (midi !== this.runMidi) {
       this.runMidi = midi
       this.runFrames = 1

@@ -4,7 +4,7 @@
  *   node scripts/check-tracker.mjs
  *
  * 覆盖：稳定帧确认、持续音只算一次、错音不推进、不向前跳音、重复音需要重新
- * 起音、八度等价、低清晰度忽略、双手/和弦分组、休止/装饰音/延音线整理、手动定位、
+ * 起音、八度等价、低清晰度忽略、小音量揉弦的滞回、双手/和弦分组、休止/装饰音/延音线整理、手动定位、
  * 连续 8 键匹配乐谱别处后的追寻跳转、超时提示。
  * 输出写到 reference/artifacts/m6/tracker.run.json。
  */
@@ -156,6 +156,28 @@ try {
   check('低清晰度不推进', update.position === 0, `${update.outcome}`)
   update = feed(tracker, C4, 7660, 4, { clarity: 0.95 })
   check('清晰度恢复后推进', update.position === 1, `${update.position}`)
+
+  // 小提琴的常见情况：音量偏小，揉弦让音高在半音边界附近来回抖动。抖动不超过
+  // 大半音就算同一个音，否则稳定帧永远累不满，游标一直不动。
+  tracker = new PracticeTracker(ascending)
+  let vibratoAt = 7800
+  const violin = { rms: 0.004, clarity: 0.75 }
+  for (let index = 0; index < 8; index += 1) {
+    const detune = index % 2 === 0 ? 0.45 : -0.45
+    update = tracker.push(frame(C4 + detune, vibratoAt, violin))
+    vibratoAt += 60
+  }
+  check(
+    '小音量加揉弦也能推进',
+    update.position === 1 && update.outcome === 'matched',
+    `pos=${update.position} / outcome=${update.outcome}`
+  )
+  update = feed(tracker, C4, vibratoAt, 6, violin)
+  check('揉弦持续发声不重复推进', update.position === 1, `${update.position}`)
+  update = feed(tracker, D4, vibratoAt + 400, 4, violin)
+  check('揉弦中换音仍能立即识别', update.position === 2, `${update.position}`)
+  update = feed(tracker, E4, vibratoAt + 800, 6, { rms: 0.001, clarity: 0.75 })
+  check('低于音量门槛不算演奏', update.position === 2 && update.outcome === 'quiet', `${update.position} / ${update.outcome}`)
 
   // 双手：同一拍点按 staff 拆成两只手，两只手都在时间窗内各演奏一个音才推进。
   const hands = buildPracticeTargets([
