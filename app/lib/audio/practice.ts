@@ -8,6 +8,7 @@
  * - 同一拍点按手分组：双手谱要求两只手都在时间窗内各演奏一个音才推进。
  * - 同一个音高持续发声只算一次；重新起音需要静音或音高变化。
  * - 揉弦造成的半音内抖动不算换音，见 `midiWithHysteresis`。
+ * - 弓弦换弓、擦弦偶尔掉一帧：确认起音时容忍一次漏检，不把稳定帧清零。
  * - 八度等价匹配单独计数：单音检测偶尔把基频判成泛音，练习模式仍推进但会提示。
  */
 
@@ -221,7 +222,7 @@ export interface PracticeTrackerOptions {
 }
 
 const DEFAULT_OPTIONS: PracticeTrackerOptions = {
-  stableFrames: 3,
+  stableFrames: 2,
   minClarity: 0.7,
   minRms: 0.003,
   releaseRms: 0.0015,
@@ -241,6 +242,8 @@ export class PracticeTracker {
   private octaveMatches = 0
   private runMidi: number | null = null
   private runFrames = 0
+  /** 这一段起音里已经容忍过的漏检帧数；只宽容一帧。 */
+  private runSkips = 0
   private runConsumed = false
   private armed = true
   private lastMidi: number | null = null
@@ -286,9 +289,21 @@ export class PracticeTracker {
       && frame.clarity >= this.options.minClarity
       && frame.rms >= this.options.minRms
     if (!usable) {
-      this.runMidi = null
-      this.runFrames = 0
-      this.runConsumed = false
+      // 确认起音时掉一帧（换弓、擦弦）：声音还在就先留着已经攒下的帧。
+      // 已经推进过的持续音不在这里宽容，掉帧要重新布防，换弓后的重复音才能重新起音。
+      if (
+        this.runFrames > 0
+        && this.runSkips === 0
+        && !this.runConsumed
+        && frame.rms >= this.options.minRms
+      ) {
+        this.runSkips = 1
+      } else {
+        this.runMidi = null
+        this.runFrames = 0
+        this.runSkips = 0
+        this.runConsumed = false
+      }
       if (frame.rms < this.options.releaseRms) this.armed = true
       return this.report('quiet')
     }
@@ -297,11 +312,13 @@ export class PracticeTracker {
     if (midi !== this.runMidi) {
       this.runMidi = midi
       this.runFrames = 1
+      this.runSkips = 0
       this.runConsumed = false
       // 音高变化就是一次新的起音。
       this.armed = true
     } else {
       this.runFrames += 1
+      this.runSkips = 0
     }
 
     if (this.runFrames < this.options.stableFrames || this.runConsumed) {
@@ -356,6 +373,7 @@ export class PracticeTracker {
   rearm(): TrackerUpdate {
     this.runMidi = null
     this.runFrames = 0
+    this.runSkips = 0
     this.runConsumed = false
     this.armed = true
     this.lastMidi = null
@@ -378,6 +396,7 @@ export class PracticeTracker {
     this.index = next < 0 ? this.targets.length : next
     this.runMidi = null
     this.runFrames = 0
+    this.runSkips = 0
     this.runConsumed = false
     this.armed = true
     this.lastMidi = null

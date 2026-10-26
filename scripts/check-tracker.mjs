@@ -4,7 +4,8 @@
  *   node scripts/check-tracker.mjs
  *
  * 覆盖：稳定帧确认、持续音只算一次、错音不推进、不向前跳音、重复音需要重新
- * 起音、八度等价、低清晰度忽略、小音量揉弦的滞回、双手/和弦分组、休止/装饰音/延音线整理、手动定位、
+ * 起音、八度等价、低清晰度忽略、小音量揉弦的滞回、换弓掉帧的容忍、快速乐句的确认延迟、
+ * 双手/和弦分组、休止/装饰音/延音线整理、手动定位、
  * 连续 8 键匹配乐谱别处后的追寻跳转、超时提示。
  * 输出写到 reference/artifacts/m6/tracker.run.json。
  */
@@ -144,6 +145,16 @@ try {
   update = feed(tracker, D4, 4960)
   check('重复音结束', update.done === true, `${update.position} / ${update.total}`)
 
+  // 小提琴换弓：声音一直没断，只是中间掉了一帧噪声，同一个音要能重新起音。
+  tracker = new PracticeTracker(repeated)
+  tracker.push(frame(C4, 5100))
+  update = tracker.push(frame(C4, 5140))
+  check('重复音推进到第二个目标', update.position === 1, `${update.position}`)
+  tracker.push(frame(null, 5180, { clarity: 0, rms: 0.05 }))
+  update = tracker.push(frame(C4, 5220))
+  update = tracker.push(frame(C4, 5260))
+  check('换弓掉一帧后重复音还能重新起音', update.position === 2, `pos=${update.position}`)
+
   // 八度误判：推进但单独标记。
   const octaveTargets = buildPracticeTargets([note(0, 'C', 4, 0), note(1, 'D', 4, 1)])
   tracker = new PracticeTracker(octaveTargets)
@@ -178,6 +189,43 @@ try {
   check('揉弦中换音仍能立即识别', update.position === 2, `${update.position}`)
   update = feed(tracker, E4, vibratoAt + 800, 6, { rms: 0.001, clarity: 0.75 })
   check('低于音量门槛不算演奏', update.position === 2 && update.outcome === 'quiet', `${update.position} / ${update.outcome}`)
+
+  // 换弓、擦弦掉一帧：声音还在就只记一次漏检，稳定帧不用从头数。
+  tracker = new PracticeTracker(ascending)
+  tracker.push(frame(C4, 8200))
+  tracker.push(frame(null, 8240, { clarity: 0, rms: 0.05 }))
+  update = tracker.push(frame(C4, 8280))
+  check(
+    '掉一帧不打断起音确认',
+    update.position === 1 && update.outcome === 'matched',
+    `pos=${update.position} / outcome=${update.outcome}`
+  )
+
+  tracker = new PracticeTracker(ascending)
+  tracker.push(frame(C4, 8400))
+  tracker.push(frame(null, 8440, { clarity: 0, rms: 0.05 }))
+  tracker.push(frame(null, 8480, { clarity: 0, rms: 0.05 }))
+  update = tracker.push(frame(C4, 8520))
+  check('连续两帧测不到音高要重新数', update.position === 0, `pos=${update.position}`)
+
+  // 快速乐句：120ms 一个音、40ms 一帧时每个音只有 3 帧，确认延迟不能超过两帧。
+  tracker = new PracticeTracker(ascending)
+  const fastLags = []
+  let fastAt = 9000
+  for (const midi of [C4, D4, E4, F4]) {
+    const start = fastAt
+    for (let index = 0; index < 3; index += 1) {
+      const before = tracker.state().position
+      update = tracker.push(frame(midi, fastAt))
+      if (update.position > before) fastLags.push(fastAt - start)
+      fastAt += 40
+    }
+  }
+  check(
+    '快速乐句跟得上（120ms 一个音）',
+    update.done === true && fastLags.length === 4 && Math.max(...fastLags) <= 80,
+    `延迟 ${fastLags.join(' / ')}ms`
+  )
 
   // 双手：同一拍点按 staff 拆成两只手，两只手都在时间窗内各演奏一个音才推进。
   const hands = buildPracticeTargets([

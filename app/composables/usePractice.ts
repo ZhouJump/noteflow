@@ -9,8 +9,6 @@
 import {
   PracticeTracker,
   buildPracticeTargets,
-  midiForFrequency,
-  midiLabel,
   type PracticeTarget,
   type TrackerOutcome,
   type TrackerUpdate
@@ -31,13 +29,11 @@ export interface PracticeSnapshot {
   octaveMatches: number
   outcome: TrackerOutcome
   stale: boolean
-  /** 最近听到的音名，只用于提示。 */
-  heard: string | null
   error: string | null
 }
 
-/** 每 60ms 取一帧，和跟踪器的稳定帧数配合，约 180ms 确认一个音。 */
-const FRAME_MS = 60
+/** 每 40ms 取一帧；两帧稳定音高约 80ms 确认，快速乐句才跟得上。 */
+const FRAME_MS = 40
 
 export function usePractice(
   notes: () => MusicXmlNote[],
@@ -76,11 +72,10 @@ export function usePractice(
     if (current !== null) void current.close().catch(() => {})
   }
 
-  /** 只在可见状态变化时更新响应式快照，避免每 60ms 触发一次渲染。 */
-  function publish(update: TrackerUpdate, heard: string | null): void {
+  /** 只在可见状态变化时更新响应式快照，避免每 40ms 触发一次渲染。 */
+  function publish(update: TrackerUpdate): void {
     const nextPhase: PracticePhase = update.done ? 'done' : 'listening'
-    const nextHeard = heard ?? snapshot.value?.heard ?? null
-    const key = [nextPhase, update.position, update.outcome, update.stale, nextHeard].join('|')
+    const key = [nextPhase, update.position, update.outcome, update.stale].join('|')
     if (key === lastKey) {
       if (update.done) release()
       return
@@ -96,7 +91,6 @@ export function usePractice(
       octaveMatches: update.octaveMatches,
       outcome: update.outcome,
       stale: update.stale,
-      heard: nextHeard,
       error: null
     }
     if (update.done) release()
@@ -149,23 +143,23 @@ export function usePractice(
     const tick = (): void => {
       if (!running || tracker === null || token !== generation) return
       analyser.getFloatTimeDomainData(frame)
+      const at = performance.now()
       let energy = 0
       for (let index = 0; index < frame.length; index += 1) {
         energy += frame[index] * frame[index]
       }
       const rms = Math.sqrt(energy / frame.length)
       const [frequency, clarity] = detector.findPitch(frame, audioContext.sampleRate)
-      const usable = frequency > 0 ? frequency : null
       const update = tracker.push({
-        frequency: usable,
+        frequency: frequency > 0 ? frequency : null,
         clarity,
         rms,
-        at: performance.now()
+        at
       })
-      const heard = usable === null ? null : midiLabel(Math.round(midiForFrequency(usable)))
-      publish(update, heard)
+      publish(update)
       if (update.done) return
-      timer = window.setTimeout(tick, FRAME_MS)
+      // 扣掉分析本身的耗时，稳定地按 FRAME_MS 取帧，不让延迟越积越多。
+      timer = window.setTimeout(tick, Math.max(0, FRAME_MS - (performance.now() - at)))
     }
     tickFn = tick
     tick()
@@ -193,7 +187,6 @@ export function usePractice(
         octaveMatches: 0,
         outcome: 'idle',
         stale: false,
-        heard: null,
         error: error.value
       }
       lastKey = ''
@@ -211,7 +204,6 @@ export function usePractice(
       octaveMatches: 0,
       outcome: 'idle',
       stale: false,
-      heard: null,
       error: null
     }
     lastKey = ''
@@ -234,7 +226,6 @@ export function usePractice(
         octaveMatches: 0,
         outcome: 'idle',
         stale: false,
-        heard: null,
         error: error.value
       }
       lastKey = ''
@@ -296,7 +287,7 @@ export function usePractice(
     if (!running || tracker === null) return
     const update = tracker.seek(noteIndex)
     lastKey = ''
-    publish(update, null)
+    publish(update)
   }
 
   if (import.meta.client) {

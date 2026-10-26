@@ -18,8 +18,8 @@ import {
 } from '~/lib/audio/scoring'
 import type { MusicXmlNote } from '~/lib/musicxml/document'
 
-/** 每 50ms 一帧；稳定帧 3 帧约 100ms 确认起音。 */
-const FRAME_MS = 50
+/** 每 40ms 一帧；两帧稳定音高约 80ms 确认起音。 */
+const FRAME_MS = 40
 
 function emptySnapshot(phase: ScoringPhase, total: number, message: string | null): ScoreSnapshot {
   return {
@@ -147,18 +147,18 @@ export function useScoring(
     const tick = (): void => {
       if (!runningLoop || tracker === null || token !== generation) return
       analyser.getFloatTimeDomainData(frame)
+      const at = performance.now()
       let energy = 0
       for (let index = 0; index < frame.length; index += 1) {
         energy += frame[index] * frame[index]
       }
       const rms = Math.sqrt(energy / frame.length)
       const [frequency, clarity] = detector.findPitch(frame, audioContext.sampleRate)
-      const usable = frequency > 0 ? frequency : null
       const state = tracker.push({
-        frequency: usable,
+        frequency: frequency > 0 ? frequency : null,
         clarity,
         rms,
-        at: performance.now()
+        at
       })
       publish(state)
       if (state.phase === 'finished') {
@@ -166,7 +166,8 @@ export function useScoring(
         release()
         return
       }
-      timer = window.setTimeout(tick, FRAME_MS)
+      // 扣掉分析本身的耗时，稳定地按 FRAME_MS 取帧，不让延迟越积越多。
+      timer = window.setTimeout(tick, Math.max(0, FRAME_MS - (performance.now() - at)))
     }
     tickFn = tick
     tick()

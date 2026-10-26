@@ -77,7 +77,7 @@ export interface ScoreSnapshot {
 
 export interface ScoringOptions {
   bpm: number
-  /** 连续多少帧算稳定起音；每帧约 60ms。 */
+  /** 连续多少帧算稳定起音；每帧约 40ms。 */
   stableFrames: number
   minClarity: number
   minRms: number
@@ -90,7 +90,7 @@ export interface ScoringOptions {
 
 const DEFAULT_OPTIONS: ScoringOptions = {
   bpm: 80,
-  stableFrames: 3,
+  stableFrames: 2,
   minClarity: 0.7,
   minRms: 0.003,
   releaseRms: 0.0015,
@@ -172,6 +172,8 @@ export class ScoreTracker {
   /** 起音检测，与 PracticeTracker 相同的稳定帧规则。 */
   private runMidi: number | null = null
   private runFrames = 0
+  /** 这一段起音里已经容忍过的漏检帧数；只宽容一帧。 */
+  private runSkips = 0
   private runStartedAt = 0
   private runConsumed = false
   private armed = true
@@ -493,9 +495,21 @@ export class ScoreTracker {
       && frame.clarity >= this.options.minClarity
       && frame.rms >= this.options.minRms
     if (!usable) {
-      this.runMidi = null
-      this.runFrames = 0
-      this.runConsumed = false
+      // 确认起音时掉一帧（换弓、擦弦）：声音还在就先留着已经攒下的帧。
+      // 已经确认过的持续音不在这里宽容，掉帧要重新布防。
+      if (
+        this.runFrames > 0
+        && this.runSkips === 0
+        && !this.runConsumed
+        && frame.rms >= this.options.minRms
+      ) {
+        this.runSkips = 1
+      } else {
+        this.runMidi = null
+        this.runFrames = 0
+        this.runSkips = 0
+        this.runConsumed = false
+      }
       if (frame.rms < this.options.releaseRms) this.armed = true
       return null
     }
@@ -504,11 +518,13 @@ export class ScoreTracker {
     if (midi !== this.runMidi) {
       this.runMidi = midi
       this.runFrames = 1
+      this.runSkips = 0
       this.runStartedAt = frame.at
       this.runConsumed = false
       this.armed = true
     } else {
       this.runFrames += 1
+      this.runSkips = 0
     }
     if (this.runFrames < this.options.stableFrames || this.runConsumed) return null
     if (!this.armed && midi === this.lastMidi) return null
@@ -522,6 +538,7 @@ export class ScoreTracker {
   private resetOnset(): void {
     this.runMidi = null
     this.runFrames = 0
+    this.runSkips = 0
     this.runConsumed = false
     this.armed = true
     this.lastMidi = null

@@ -3,8 +3,8 @@
  * 安装提示：应用启动后询问一次是否安装为应用。
  *
  * 已安装、验收脚本写入跳过标记或正在独立窗口中运行时，composable 会直接
- * 压掉提示；支持 beforeinstallprompt 的浏览器给出「安装」按钮，其余浏览器
- * 展示手动添加步骤。
+ * 压掉提示；等到了 beforeinstallprompt 就给「安装」按钮，等不到（Safari、
+ * Firefox）才展示手动添加的步骤。
  */
 const { ready, visible, canPrompt, busy, steps, install, close } = useInstallPrompt()
 
@@ -32,7 +32,7 @@ function onOpenChange(open: boolean): void {
         <p class="text-sm text-muted">
           {{ canPrompt
             ? '装好后从桌面或主屏幕直接打开，界面清爽，也不用每次输入网址。'
-            : '这个浏览器需要手动添加，按下面的步骤操作就行。' }}
+            : '也可以手动添加，按下面的步骤操作就行。' }}
         </p>
         <ol
           v-if="!canPrompt"

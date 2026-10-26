@@ -1,10 +1,13 @@
 /**
  * 安装为应用：每次启动时询问一次，安装完成后不再出现。
  *
- * 浏览器允许自动安装时才会派发 `beforeinstallprompt`（Chrome 通常还要求用户
- * 点击过页面并累计浏览 30 秒）；事件到达前先展示手动安装步骤，事件到达后
- * 对话框会自动换成可以直接调用浏览器安装流程的按钮。iOS 没有这个事件，
- * 始终显示「添加到主屏幕」的步骤。
+ * 浏览器判定可以安装后才派发 `beforeinstallprompt`：Chrome 与 Edge 在页面加载后
+ * 几百毫秒就发，不需要 Service Worker；Safari 与 Firefox 不发。所以启动时先等这个
+ * 事件再决定话术——事件没到就说「手动添加」，会把本来能装的浏览器误报成不支持，
+ * 第一次打开和第二次打开的表现也会不一样。
+ *
+ * 事件在手动步骤已经弹出后才到，对话框会就地换成安装按钮；如果用户已经关掉了
+ * 手动步骤，事件到达时再问一次，因为那次关掉的只是说明，不是安装。
  *
  * 自动化验收在文档加载前写入 `noteflow:install:off`，避免弹窗挡住页面操作；
  * 安装成功后把 `noteflow:installed` 留在本机，之后在普通标签页里打开也不再询问。
@@ -30,6 +33,10 @@ function rememberPrompt(event: BeforeInstallPromptEvent | null): void {
 const SKIP_KEY = 'noteflow:install:off'
 /** 记住已经安装过，避免从浏览器标签页打开时重复询问。 */
 const INSTALLED_KEY = 'noteflow:installed'
+/** 没有安装事件时等这么久再退回手动步骤：给浏览器留出判定可安装的时间。 */
+const PROMPT_WAIT_MS = 2500
+/** 已经有安装事件、或 iOS 等不到事件时，首屏稳定后就弹出。 */
+const FIRST_SHOW_MS = 800
 
 const deferred = shallowRef<BeforeInstallPromptEvent | null>(null)
 const visible = ref(false)
@@ -38,7 +45,10 @@ const ios = ref(false)
 const ready = ref(false)
 const busy = ref(false)
 let listening = false
+/** 这次启动已经弹过对话框。 */
 let asked = false
+/** 弹出的时候已经有安装按钮；只展示过手动步骤时，晚到的事件还该再问一次。 */
+let promptShown = false
 let timer: number | null = null
 
 function readFlag(key: string): boolean {
@@ -82,16 +92,18 @@ function isSkipped(): boolean {
 function show(): void {
   if (visible.value || installed.value) return
   asked = true
+  promptShown = promptShown || deferred.value !== null
   visible.value = true
 }
 
 function scheduleShow(): void {
   if (asked || installed.value) return
-  // 等首屏渲染完成再问，避免对话框和页面同时出现。
+  // 等安装事件再定话术，避免把能安装的浏览器说成需要手动添加。
+  const delay = deferred.value !== null || ios.value ? FIRST_SHOW_MS : PROMPT_WAIT_MS
   timer = window.setTimeout(() => {
     timer = null
     show()
-  }, 800)
+  }, delay)
 }
 
 function onBeforeInstall(event: Event): void {
@@ -102,10 +114,17 @@ function onBeforeInstall(event: Event): void {
   // 事件只在未安装时派发：本地还留着「已安装」说明应用已经被卸载。
   installed.value = false
   writeFlag(INSTALLED_KEY, false)
-  if (asked) return
+  if (isSkipped()) return
+  if (visible.value) {
+    // 对话框开着：canPrompt 变化后会就地换成安装按钮。
+    promptShown = true
+    return
+  }
+  // 已经问过并且当时就有安装按钮，说明用户拒绝过安装，不再打扰。
+  if (asked && promptShown) return
   if (timer !== null) window.clearTimeout(timer)
   timer = null
-  if (!isSkipped()) show()
+  show()
 }
 
 function onInstalled(): void {

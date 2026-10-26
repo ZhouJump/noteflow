@@ -217,6 +217,41 @@ function runPureChecks() {
     `${update.last?.outcome} / ${update.accuracy} 分`
   )
 
+  // 起音时偶尔掉一帧：声音还在时不能把已经攒起来的稳定帧清零，否则小提琴
+  // 每次换弓都会晚一两帧，快速乐句会一路往后错。
+  tracker = new ScoreTracker(notes, { bpm: 60 })
+  tracker.start()
+  tracker.push(frame(60, 1000))
+  tracker.push(frame(null, 1010, { clarity: 0.3, rms: 0.05 }))
+  update = tracker.push(frame(60, 1020))
+  check(
+    '掉一帧仍能在两帧内确认起音',
+    update.judged === 1 && update.last?.outcome === 'perfect',
+    `${update.judged} / ${update.last?.outcome}`
+  )
+
+  // 120 BPM 的十六分音符：每个音只有 125ms，确认慢了就会落到下一个音上。
+  const fastNotes = buildScoreNotes(buildPracticeTargets([
+    note(0, 'C', 4, 0),
+    note(1, 'D', 4, 0.25),
+    note(2, 'E', 4, 0.5),
+    note(3, 'F', 4, 0.75)
+  ]))
+  tracker = new ScoreTracker(fastNotes, { bpm: 120 })
+  tracker.start()
+  let fastAt = 1000
+  for (const midi of [60, 62, 64, 65]) {
+    for (let index = 0; index < 3; index += 1) {
+      update = tracker.push(frame(midi, fastAt))
+      fastAt += 40
+    }
+  }
+  check(
+    '十六分音符不漏音且都算完美',
+    update.phase === 'finished' && update.missed === 0 && update.perfect === 4,
+    `${update.phase} / 漏 ${update.missed} / 完美 ${update.perfect}`
+  )
+
   // 暂停：恢复后回到等待当前未判音，等它落下再建立新的时间原点。
   tracker = new ScoreTracker(buildScoreNotes(buildPracticeTargets([
     note(0, 'C', 4, 0),
