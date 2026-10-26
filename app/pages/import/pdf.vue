@@ -105,7 +105,7 @@ async function onFile(event: Event): Promise<void> {
 
     <p
       v-if="message"
-      class="mx-auto w-full max-w-2xl px-4 pt-3 text-sm"
+      class="mx-auto w-full max-w-4xl px-4 pt-3 text-sm"
       :class="error ? 'text-error' : 'text-muted'"
       role="status"
       :data-test="error ? 'pdf-error' : 'pdf-status'"

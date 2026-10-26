@@ -77,7 +77,7 @@ export interface ScoreSnapshot {
 
 export interface ScoringOptions {
   bpm: number
-  /** 连续多少帧算稳定起音；每帧约 40ms。 */
+  /** 连续多少帧算稳定起音；每帧约 30ms。 */
   stableFrames: number
   minClarity: number
   minRms: number
@@ -91,9 +91,9 @@ export interface ScoringOptions {
 const DEFAULT_OPTIONS: ScoringOptions = {
   bpm: 80,
   stableFrames: 2,
-  minClarity: 0.7,
-  minRms: 0.003,
-  releaseRms: 0.0015,
+  minClarity: 0.6,
+  minRms: 0.0015,
+  releaseRms: 0.0008,
   matchWindowMs: 650,
   missWindowMs: 500
 }

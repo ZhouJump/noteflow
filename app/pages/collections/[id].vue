@@ -380,7 +380,7 @@ onBeforeUnmount(() => {
       </template>
     </PageHeader>
 
-    <div class="mx-auto max-w-2xl px-4 pt-4">
+    <div class="mx-auto max-w-4xl px-4 pt-4">
       <div
         v-if="loading"
         class="flex items-center justify-center gap-2 py-16 text-sm text-muted"

@@ -1,24 +1,23 @@
 /**
- * 生成自带曲集「小提琴经典曲集」的预识别数据。
+ * 生成自带曲集：公有领域 MusicXML + 首页预览。
  *
- *   pnpm dev                                     # 另开终端
- *   node scripts/build-preset.mjs                # 全部四首，写入 public/presets/violin
- *   node scripts/build-preset.mjs --only 小步舞曲 --out /tmp/preset-test
+ *   node scripts/build-preset.mjs                  # 钢琴、小提琴各四首，全部重新生成
+ *   node scripts/build-preset.mjs --family violin  # 只生成小提琴曲集
+ *   node scripts/build-preset.mjs --family piano --only 卡农
  *
- * 脚本用真实 Chromium 走一遍现有的 PDF 导入链路：渲染 → HOMR 识别 → 保存，
- * 再把 IndexedDB 里的识别结果导出成静态资产（manifest + 每页图片），应用首次
- * 打开谱架时由 `app/lib/presets/violin.ts` 写回本机库。
+ * 曲目来源：钢琴取 musetrainer/library，小提琴取 salu133445/bach-violin-dataset
+ * 的参考乐谱（BWV 1001–1006，公有领域），都是 `scores/*.mxl`。脚本把压缩包解成
+ * 纯 MusicXML、压掉标签之间的空白，再用 `node_modules` 里的 Verovio 渲染第一页
+ * 作为谱架缩略图。缩略图存 SVG：字形路径自带，放大到高分屏也不糊，比截图小得多。
  *
- * 输入是 `public/samples/violin` 下的四份「曲名 — 作曲家.pdf」与封面 `cover.webp`；
- * 这个目录不在 `pnpm assets` 的清理范围里（只同步它自己复制的样例）。
- *
- * 这里的识别在浏览器里跑，耗时取决于页数（单页约半分钟到一分钟），四首合计
- * 十几分钟。中途失败会保留已导出的内容，方便排查。
+ * 下载缓存在 `.cache/preset-src`；本机有
+ * `reference/samples/bach-violin-dataset-v1.0` 时小提琴直接读本地，不再重复下载。
+ * 应用首次打开谱架时由 `app/lib/presets/library.ts` 读 manifest 写回本机库。
  */
 
-import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import zlib from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -29,427 +28,294 @@ const flag = (name, fallback) => {
   return index === -1 ? fallback : process.argv[index + 1]
 }
 
-const base = flag('--url', 'http://127.0.0.1:3000').replace(/\/$/, '')
-const SAMPLE_DIR = path.join(root, 'public/samples/violin')
-const DEFAULT_OUT = path.join(root, 'public/presets/violin')
-const BROWSER = process.env.BROWSER ?? '/usr/bin/microsoft-edge'
-const PORT = Number(process.env.CDP_PORT ?? 9337)
-const RECOGNITION_TIMEOUT = Number(process.env.TIMEOUT ?? 20 * 60_000)
-
-/** 谱集内顺序：春、巴赫、贝多芬、佩措尔德。 */
-const ENTRIES = [
-  '《春》第一乐章 — 维瓦尔第.pdf',
-  'E 大调第三无伴奏小提琴组曲：前奏曲 — 巴赫.pdf',
-  'F 大调浪漫曲 — 贝多芬.pdf',
-  'G 大调小步舞曲 — 佩措尔德.pdf'
-]
-
-const only = flag('--only', '')
-const selected = ENTRIES.filter(name => only === '' || name.includes(only))
-if (selected.length === 0) throw new Error(`没有匹配的曲目：${only}`)
-// 先确认输入齐全再清理输出目录：缺一份 PDF 时不能把已生成的数据删掉。
-const absent = selected.filter(name => !fs.existsSync(path.join(SAMPLE_DIR, name)))
-if (absent.length > 0) {
-  throw new Error(`缺少原始 PDF：${absent.join('、')}（放在 ${path.relative(root, SAMPLE_DIR)}）`)
+/**
+ * 每个曲集一份配置。`prefix` 同时是曲目 id 前缀与文件名前缀；`local` 是本机已有
+ * 的数据目录，留空表示只能联网下载。
+ */
+const FAMILIES = {
+  piano: {
+    out: 'public/presets/piano',
+    collection: { id: 'preset-piano-classics', title: '钢琴经典曲集' },
+    cover: 'cover.webp',
+    prefix: 'preset-piano-',
+    remote: 'https://raw.githubusercontent.com/musetrainer/library/master/scores/',
+    local: '',
+    entries: [
+      {
+        source: 'Bach_Minuet_in_G_Major_BWV_Anh._114.mxl',
+        title: 'G 大调小步舞曲',
+        composer: '佩措尔德',
+        note: 'BWV Anh. 114'
+      },
+      { source: 'Fur_Elise.mxl', title: '致爱丽丝', composer: '贝多芬', note: 'WoO 59' },
+      {
+        source: 'Chopin_-_Nocturne_Op_9_No_2_E_Flat_Major.mxl',
+        title: '夜曲 Op.9 No.2',
+        composer: '肖邦',
+        note: '降 E 大调'
+      },
+      { source: 'Canon_in_D.mxl', title: '卡农', composer: '帕赫贝尔', note: 'D 大调' }
+    ]
+  },
+  violin: {
+    out: 'public/presets/violin',
+    collection: { id: 'preset-violin-solo', title: '小提琴经典曲集' },
+    cover: 'cover.webp',
+    prefix: 'preset-violin-',
+    remote: 'https://raw.githubusercontent.com/salu133445/bach-violin-dataset/main/bach-violin/scores/',
+    local: 'reference/samples/bach-violin-dataset-v1.0/scores',
+    entries: [
+      { source: 'bwv1001/bwv1001_mov1.mxl', title: 'G 小调柔板', composer: '巴赫', note: 'BWV 1001' },
+      { source: 'bwv1002/bwv1002_mov5.mxl', title: 'B 小调萨拉班德', composer: '巴赫', note: 'BWV 1002' },
+      { source: 'bwv1004/bwv1004_mov5.mxl', title: 'D 小调恰空', composer: '巴赫', note: 'BWV 1004' },
+      { source: 'bwv1006/bwv1006_mov1.mxl', title: 'E 大调前奏曲', composer: '巴赫', note: 'BWV 1006' }
+    ]
+  }
 }
-const outDir = path.resolve(flag('--out', DEFAULT_OUT))
-if (only === '') fs.rmSync(outDir, { recursive: true, force: true })
-fs.mkdirSync(outDir, { recursive: true })
 
-const COLLECTION = { id: 'preset-violin-classics', title: '小提琴经典曲集' }
+const CACHE_ROOT = path.join(root, '.cache/preset-src')
+
+/** 预览与 `app/lib/verovio.ts` 的排版参数一致，谱架上看到的就是曲谱页的第一眼。 */
+const RENDER_OPTIONS = {
+  scale: 45,
+  pageWidth: 2100,
+  pageMarginLeft: 40,
+  pageMarginRight: 40,
+  pageMarginTop: 40,
+  pageMarginBottom: 40,
+  breaks: 'auto',
+  adjustPageHeight: true,
+  svgViewBox: true,
+  header: 'none',
+  footer: 'none',
+  justifyVertically: false
+}
+
+/* ---------- 下载与解包 ---------- */
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-async function waitFor(fn, timeout, label) {
-  const deadline = Date.now() + timeout
-  let lastError = null
-  while (Date.now() < deadline) {
+/**
+ * 取一份 `.mxl`：缓存优先，其次是本机数据集，最后才联网。GitHub 偶尔会掐连接，
+ * 下载失败重试几次再放弃。
+ */
+async function readSource(family, entry) {
+  fs.mkdirSync(CACHE_ROOT, { recursive: true })
+  const target = path.join(CACHE_ROOT, entry.source.replace(/\//g, '_'))
+  if (fs.existsSync(target) && fs.statSync(target).size > 0) return fs.readFileSync(target)
+
+  const local = family.local === '' ? '' : path.join(root, family.local, entry.source)
+  if (local !== '' && fs.existsSync(local)) {
+    fs.copyFileSync(local, target)
+    return fs.readFileSync(target)
+  }
+
+  const url = family.remote + entry.source.split('/').map(encodeURIComponent).join('/')
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
     try {
-      const value = await fn()
-      if (value) return value
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const buffer = Buffer.from(await response.arrayBuffer())
+      fs.writeFileSync(target, buffer)
+      return buffer
     } catch (error) {
-      lastError = error
+      if (attempt === 4) throw new Error(`下载失败：${entry.source}（${error.message}）`, { cause: error })
+      await sleep(1500 * attempt)
     }
-    await sleep(400)
   }
-  throw new Error(`timeout: ${label}${lastError ? `（${lastError.message}）` : ''}`)
+  throw new Error(`下载失败：${entry.source}`)
 }
 
-/** 「曲名 — 作曲家.pdf」拆成两个字段；没有分隔符时整段都是曲名。 */
-function splitEntry(file) {
-  const stem = file.replace(/\.pdf$/i, '').trim()
-  const match = /^(.+?)\s+—\s+(.+)$/.exec(stem)
-  return match === null
-    ? { title: stem, composer: '' }
-    : { title: match[1].trim(), composer: match[2].trim() }
-}
-
-function pdfPages(file) {
-  const info = execFileSync('pdfinfo', [file], { encoding: 'utf8' })
-  const match = /^Pages:\s+(\d+)/m.exec(info)
-  if (match === null) throw new Error(`无法读取页数：${file}`)
-  return Number(match[1])
-}
-
-const profile = fs.mkdtempSync('/tmp/noteflow-preset-')
-const browser = spawn(
-  BROWSER,
-  [
-    '--headless=new',
-    `--remote-debugging-port=${PORT}`,
-    `--user-data-dir=${profile}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--no-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-background-timer-throttling',
-    '--disable-renderer-backgrounding',
-    'about:blank'
-  ],
-  { stdio: 'ignore' }
-)
-
-process.on('exit', () => {
-  browser.kill('SIGKILL')
-  try {
-    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-  } catch {
-    // 剩余临时文件交给系统回收。
+/**
+ * 从 zip 里取出一个文件。只用中央目录 + `inflateRaw`，不引入解压依赖：
+ * `.mxl` 只装一份 container 与一份乐谱，够用。
+ */
+function readZipEntry(buffer, wanted) {
+  let end = -1
+  for (let offset = buffer.length - 22; offset >= 0; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === 0x06054b50) {
+      end = offset
+      break
+    }
   }
-})
+  if (end < 0) throw new Error('不是有效的 zip／mxl 文件')
 
-await waitFor(async () => {
-  const response = await fetch(`http://127.0.0.1:${PORT}/json/version`)
-  return (await response.json()).webSocketDebuggerUrl
-}, 30_000, 'devtools endpoint')
+  const count = buffer.readUInt16LE(end + 10)
+  let cursor = buffer.readUInt32LE(end + 16)
+  for (let index = 0; index < count; index += 1) {
+    if (buffer.readUInt32LE(cursor) !== 0x02014b50) throw new Error('zip 中央目录损坏')
+    const method = buffer.readUInt16LE(cursor + 10)
+    const compressedSize = buffer.readUInt32LE(cursor + 20)
+    const nameLength = buffer.readUInt16LE(cursor + 28)
+    const extraLength = buffer.readUInt16LE(cursor + 30)
+    const commentLength = buffer.readUInt16LE(cursor + 32)
+    const localOffset = buffer.readUInt32LE(cursor + 42)
+    const name = buffer.toString('utf8', cursor + 46, cursor + 46 + nameLength)
 
-const targets = await waitFor(async () => {
-  const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()
-  const found = list.filter(entry => entry.type === 'page' && entry.webSocketDebuggerUrl)
-  return found.length > 0 ? found : null
-}, 30_000, 'page target')
-
-const socket = new WebSocket(targets[0].webSocketDebuggerUrl)
-await new Promise((resolve, reject) => {
-  socket.addEventListener('open', resolve, { once: true })
-  socket.addEventListener('error', reject, { once: true })
-})
-
-let nextId = 0
-const pending = new Map()
-socket.addEventListener('message', (event) => {
-  const message = JSON.parse(event.data)
-  if (message.id && pending.has(message.id)) {
-    const { resolve, reject } = pending.get(message.id)
-    pending.delete(message.id)
-    if (message.error) reject(new Error(JSON.stringify(message.error)))
-    else resolve(message.result)
-    return
+    if (name === wanted) {
+      const localNameLength = buffer.readUInt16LE(localOffset + 26)
+      const localExtraLength = buffer.readUInt16LE(localOffset + 28)
+      const start = localOffset + 30 + localNameLength + localExtraLength
+      const data = buffer.subarray(start, start + compressedSize)
+      if (method === 0) return data.toString('utf8')
+      if (method === 8) return zlib.inflateRawSync(data).toString('utf8')
+      throw new Error(`不支持的压缩方式 ${method}：${name}`)
+    }
+    cursor += 46 + nameLength + extraLength + commentLength
   }
-  if (message.method === 'Runtime.exceptionThrown') {
-    const details = message.params.exceptionDetails
-    console.log(`[page error] ${details.exception?.description ?? details.text}`)
+  throw new Error(`zip 里没有 ${wanted}`)
+}
+
+/** `.mxl` 的主文档名写在 `META-INF/container.xml` 里。 */
+function unzipMxl(buffer) {
+  const container = readZipEntry(buffer, 'META-INF/container.xml')
+  const fullPath = /full-path="([^"]+)"/.exec(container)?.[1]
+  if (fullPath === undefined) throw new Error('container.xml 里没有指向乐谱')
+  return readZipEntry(buffer, fullPath)
+}
+
+/* ---------- 清洗与统计 ---------- */
+
+/**
+ * 压掉标签之间的空白与 DOCTYPE。解析时会剥掉 DOCTYPE，这里先删掉省体积；
+ * 带内部实体声明的文件按不可信处理，直接拒绝。
+ */
+function compact(xml) {
+  if (/<!ENTITY/i.test(xml)) throw new Error('乐谱里有内部实体声明，拒绝打包')
+  return xml
+    .replace(/<!DOCTYPE[^[>]*(\[[\s\S]*?\])?[^>]*>/i, '')
+    .replace(/>\s+</g, '><')
+    .trim()
+}
+
+function stats(xml) {
+  const notes = (xml.match(/<note[\s>]/g) ?? []).length
+  const measures = (xml.match(/<measure[\s>]/g) ?? []).length
+  const staves = new Set([...xml.matchAll(/<staff>(\d+)<\/staff>/g)].map(match => Number(match[1])))
+  const time = /<time[^>]*>\s*<beats>([^<]+)<\/beats>\s*<beat-type>([^<]+)<\/beat-type>/.exec(xml)
+  if (!xml.startsWith('<?xml') && !xml.startsWith('<score-partwise')) {
+    throw new Error('乐谱不是 score-partwise')
   }
-})
-socket.addEventListener('close', () => {
-  for (const { reject } of pending.values()) reject(new Error('浏览器连接已断开'))
-  pending.clear()
-})
-
-const send = (method, params = {}) =>
-  new Promise((resolve, reject) => {
-    const id = (nextId += 1)
-    pending.set(id, { resolve, reject })
-    socket.send(JSON.stringify({ id, method, params }))
-  })
-
-const evaluate = async (expression) => {
-  const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
-  if (result.exceptionDetails) throw new Error(result.exceptionDetails.text)
-  return result.result.value
+  if (!/<score-partwise/.test(xml)) throw new Error('乐谱不是 score-partwise')
+  return {
+    notes,
+    measures,
+    staves: Math.max(1, ...staves),
+    time: time === null ? null : { beats: Number(time[1]), beatType: Number(time[2]) }
+  }
 }
 
-const text = selector =>
-  evaluate(`document.querySelector(${JSON.stringify(selector)})?.textContent?.trim() ?? ''`)
+/* ---------- 预览 ---------- */
 
-const count = selector =>
-  evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`)
+let toolkit = null
 
-async function click(selector) {
-  const clicked = await evaluate(`(() => {
-    const element = document.querySelector(${JSON.stringify(selector)})
-    if (!element) return false
-    element.scrollIntoView({ block: 'center' })
-    if (element instanceof HTMLElement) element.click()
-    else element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-    return true
-  })()`)
-  if (!clicked) throw new Error(`元素不存在：${selector}`)
+/** Verovio 的 wasm 模块加载一次就够，两个曲集共用同一个实例。 */
+async function renderPreview(xml) {
+  if (toolkit === null) {
+    const { default: createModule } = await import('verovio/wasm')
+    const { VerovioToolkit } = await import('verovio/esm')
+    toolkit = new VerovioToolkit(await createModule())
+    toolkit.setOptions(RENDER_OPTIONS)
+  }
+  if (toolkit.loadData(xml) === 0) {
+    throw new Error(`Verovio 无法排版：${String(toolkit.getLog()).slice(0, 200)}`)
+  }
+  return {
+    svg: toolkit.renderToSVG(1),
+    pages: Math.max(1, toolkit.getPageCount())
+  }
 }
 
-/** 写值并派发 input，让 Vue 的 v-model 收到变化。 */
-async function fill(selector, value) {
-  const filled = await evaluate(`(() => {
-    const element = document.querySelector(${JSON.stringify(selector)})
-    if (!element) return false
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-    if (!setter) return false
-    setter.call(element, ${JSON.stringify(value)})
-    element.dispatchEvent(new Event('input', { bubbles: true }))
-    return true
-  })()`)
-  if (!filled) throw new Error(`输入框不存在：${selector}`)
-}
+/* ---------- 主流程 ---------- */
 
-async function attachFiles(selector, files) {
-  const { root: documentRoot } = await send('DOM.getDocument', { depth: -1 })
-  const { nodeId } = await send('DOM.querySelector', { nodeId: documentRoot.nodeId, selector })
-  if (!nodeId) throw new Error(`file input 不存在：${selector}`)
-  await send('DOM.setFileInputFiles', { nodeId, files })
-  await evaluate(`(() => {
-    const input = document.querySelector(${JSON.stringify(selector)})
-    if (input && input.files && input.files.length > 0) {
-      input.dispatchEvent(new Event('change', { bubbles: true }))
-    }
-  })()`)
-}
+async function buildFamily(family, only) {
+  const outDir = path.resolve(root, family.out)
+  const selected = family.entries
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => only === '' || entry.title.includes(only))
+  if (selected.length === 0) throw new Error(`${family.collection.title} 里没有匹配的曲目：${only}`)
 
-async function open(target) {
-  await send('Page.navigate', { url: `${base}${target}` })
-  await waitFor(() => evaluate('document.readyState === \'complete\''), 60_000, `load ${target}`)
-  await waitFor(() => evaluate('Boolean(document.querySelector("#__nuxt")?.__vue_app__)'), 60_000, `vue ${target}`)
-  await sleep(300)
-}
-
-await send('Runtime.enable')
-await send('DOM.enable')
-await send('Page.enable')
-// 安装提示会盖在页面顶部，生成预置曲集时不需要它。
-await send('Page.addScriptToEvaluateOnNewDocument', {
-  source: `try { localStorage.setItem('noteflow:install:off', '1') } catch {}`
-})
-await send('Emulation.setDeviceMetricsOverride', {
-  width: 390, height: 844, deviceScaleFactor: 1, mobile: true
-})
-
-/** 读一份曲谱的元数据与识别记录（不含 Blob）。 */
-function readScoreBundle(scoreId) {
-  return evaluate(`(async () => {
-    const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open('noteflow')
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-    const readAll = store => new Promise((resolve, reject) => {
-      const request = database.transaction(store, 'readonly').objectStore(store).getAll()
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-    const [scores, pages, recognitions, assets] = await Promise.all([
-      readAll('scores'),
-      readAll('pages'),
-      readAll('recognitions'),
-      readAll('assets')
-    ])
-    database.close()
-    const id = ${JSON.stringify(scoreId)}
-    const score = scores.find(entry => entry.id === id)
-    if (score === undefined) return null
-    return {
-      score: {
-        id: score.id,
-        title: score.title,
-        composer: score.composer,
-        pageCount: score.pageCount,
-        noteCount: score.noteCount
-      },
-      pages: pages
-        .filter(entry => entry.scoreId === id)
-        .sort((left, right) => left.pageIndex - right.pageIndex)
-        .map(entry => ({
-          id: entry.id,
-          pageIndex: entry.pageIndex,
-          originalAssetId: entry.originalAssetId
-        })),
-      recognitions: recognitions
-        .filter(entry => entry.scoreId === id)
-        .map(entry => ({
-          id: entry.id,
-          pageId: entry.pageId,
-          musicXml: entry.musicXml,
-          sidecar: entry.sidecar,
-          noteSymbols: entry.noteSymbols,
-          modelVersion: entry.modelVersion,
-          sourceRevision: entry.sourceRevision
-        })),
-      assets: assets
-        .filter(entry => entry.scoreId === id && entry.kind === 'original')
-        .map(entry => ({
-          id: entry.id,
-          width: entry.width,
-          height: entry.height
-        }))
-    }
-  })()`)
-}
-
-/** 取一张图片资产并编码成 base64。逐张传输，避免一次 CDP 消息塞几十 MB。 */
-function assetBase64(assetId) {
-  return evaluate(`(async () => {
-    const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open('noteflow')
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-    const asset = await new Promise((resolve, reject) => {
-      const request = database.transaction('assets', 'readonly').objectStore('assets').get(${JSON.stringify(assetId)})
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-    database.close()
-    if (asset === undefined) return null
-    const buffer = new Uint8Array(await asset.blob.arrayBuffer())
-    let binary = ''
-    for (let offset = 0; offset < buffer.length; offset += 0x8000) {
-      binary += String.fromCharCode.apply(null, buffer.subarray(offset, offset + 0x8000))
-    }
-    return btoa(binary)
-  })()`)
-}
-
-/** 谱集封面：cover.webp 缩到 640 宽后编码成 JPEG。 */
-async function exportCover() {
-  const base64 = await evaluate(`(async () => {
-    const response = await fetch('/samples/violin/cover.webp')
-    if (!response.ok) throw new Error('封面不存在')
-    const bitmap = await createImageBitmap(await response.blob())
-    const scale = Math.min(1, 640 / bitmap.width)
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale))
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale))
-    const context = canvas.getContext('2d')
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
-    bitmap.close()
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.86))
-    const buffer = new Uint8Array(await blob.arrayBuffer())
-    let binary = ''
-    for (let offset = 0; offset < buffer.length; offset += 0x8000) {
-      binary += String.fromCharCode.apply(null, buffer.subarray(offset, offset + 0x8000))
-    }
-    return btoa(binary)
-  })()`)
-  fs.writeFileSync(path.join(outDir, 'cover.jpg'), Buffer.from(base64, 'base64'))
-}
-
-await open('/import/pdf')
-await exportCover()
-console.log(`封面已导出：${path.join(outDir, 'cover.jpg')}`)
-
-const saved = []
-for (const [index, file] of selected.entries()) {
-  const filePath = path.join(SAMPLE_DIR, file)
-  if (!fs.existsSync(filePath)) throw new Error(`PDF 不存在：${filePath}`)
-  const expected = pdfPages(filePath)
-  const { title, composer } = splitEntry(file)
-  console.log(`\n[${index + 1}/${selected.length}] ${title}${composer ? ` · ${composer}` : ''}（${expected} 页）`)
-
-  await open('/import/pdf')
-  await attachFiles('[data-test="pdf-input"]', [filePath])
-  await waitFor(async () => {
-    const failure = await text('[data-test="pdf-error"]')
-    if (failure) throw new Error(failure)
-    return (await count('[data-test="page-item"]')) === expected
-  }, 180_000, `${file} 渲染`)
-
-  await click('[data-test="start-recognition"]')
-  const started = Date.now()
-  const status = await waitFor(async () => {
-    const current = await text('[data-test="status"]')
-    if (current.includes('失败') || current.includes('取消')) throw new Error(current)
-    return current.startsWith('识别完成') ? current : ''
-  }, RECOGNITION_TIMEOUT, `${file} 识别`)
-  console.log(`  ${status}（${Math.round((Date.now() - started) / 1000)}s）`)
-
-  await click('[data-test="save-score"]')
-  await waitFor(
-    () => evaluate('Boolean(document.querySelector(\'[data-test="save-score-confirm"]\'))'),
-    10_000,
-    'save dialog'
-  )
-  await fill('[data-test="score-title-input"]', title)
-  await fill('[data-test="score-composer-input"]', composer)
-  await click('[data-test="save-score-confirm"]')
-  const scorePath = await waitFor(
-    () => evaluate('location.pathname').then(value => (value.startsWith('/scores/') ? value : '')),
-    120_000,
-    'score page'
-  )
-  const scoreId = scorePath.split('/').pop()
-  saved.push({ file, title, composer, expected, scoreId })
-  console.log(`  已保存 ${scoreId}`)
-}
-
-const manifestScores = []
-for (const [index, item] of saved.entries()) {
-  const bundle = await readScoreBundle(item.scoreId)
-  if (bundle === null) throw new Error(`读不到曲谱：${item.scoreId}`)
-  const scoreSlug = `preset-violin-${index + 1}`
-  const records = new Map(bundle.recognitions.map(record => [record.pageId, record]))
-  const pages = []
-
-  for (const page of bundle.pages) {
-    const asset = bundle.assets.find(entry => entry.id === page.originalAssetId)
-    const record = records.get(page.id)
-    if (asset === undefined || record === undefined) {
-      throw new Error(`第 ${page.pageIndex + 1} 页缺少原图或识别记录`)
-    }
-    const imageName = `${scoreSlug}-${page.pageIndex + 1}.jpg`
-    const base64 = await assetBase64(asset.id)
-    if (base64 === null) throw new Error(`读不到页面图片：${asset.id}`)
-    fs.writeFileSync(path.join(outDir, imageName), Buffer.from(base64, 'base64'))
-    pages.push({
-      id: `${scoreSlug}-page-${page.pageIndex + 1}`,
-      image: imageName,
-      width: asset.width,
-      height: asset.height,
-      recognition: {
-        id: `${scoreSlug}-recognition-${page.pageIndex + 1}`,
-        musicXml: record.musicXml,
-        sidecar: record.sidecar,
-        noteSymbols: record.noteSymbols,
-        modelVersion: record.modelVersion,
-        sourceRevision: record.sourceRevision
+  fs.mkdirSync(outDir, { recursive: true })
+  // 只清掉脚本自己生成的文件；封面 cover.webp 是手绘素材，每次重新生成都不该动它。
+  if (only === '') {
+    const generated = new RegExp(`^${family.prefix}.*\\.(musicxml|svg)$`)
+    for (const file of fs.readdirSync(outDir)) {
+      if (file === 'manifest.json' || generated.test(file)) {
+        fs.rmSync(path.join(outDir, file), { force: true })
       }
+    }
+  }
+
+  const manifestPath = path.join(outDir, 'manifest.json')
+  const previous = only !== '' && fs.existsSync(manifestPath)
+    ? JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    : null
+
+  const scores = []
+  for (const { entry, index } of selected) {
+    const id = `${family.prefix}${index + 1}`
+    const musicXml = compact(unzipMxl(await readSource(family, entry)))
+    const info = stats(musicXml)
+    const preview = await renderPreview(musicXml)
+
+    const file = `${id}.musicxml`
+    const cover = `${id}.svg`
+    fs.writeFileSync(path.join(outDir, file), musicXml)
+    fs.writeFileSync(path.join(outDir, cover), preview.svg)
+
+    scores.push({
+      id,
+      title: entry.title,
+      composer: entry.composer,
+      note: entry.note,
+      file,
+      preview: cover,
+      notes: info.notes,
+      measures: info.measures,
+      staves: info.staves,
+      pages: preview.pages,
+      time: info.time,
+      source: `${family.remote}${entry.source}`,
+      license: 'Public Domain'
     })
-    console.log(`  ${imageName} ${asset.width}×${asset.height} · ${record.noteSymbols.length} 个音符符号`)
+    console.log(
+      `${entry.title}（${entry.composer}）：${info.measures} 小节 · ${info.notes} 个音符 · `
+      + `${preview.pages} 页排版 · ${(musicXml.length / 1024).toFixed(0)} KB`
+    )
   }
 
-  if (pages.length !== item.expected) {
-    throw new Error(`${item.title} 页数不符：期望 ${item.expected}，实际 ${pages.length}`)
+  const manifest = {
+    version: 2,
+    collection: family.collection,
+    cover: family.cover,
+    scores: only === '' || previous === null
+      ? scores
+      : previous.scores.map(entry => scores.find(next => next.id === entry.id) ?? entry)
   }
-  manifestScores.push({
-    id: scoreSlug,
-    title: bundle.score.title,
-    composer: bundle.score.composer,
-    source: item.file,
-    pages
-  })
-  console.log(`${item.title}：${pages.length} 页，${bundle.score.noteCount} 个音符`)
+  if (!fs.existsSync(path.join(outDir, manifest.cover))) {
+    console.warn(`提示：缺少封面 ${manifest.cover}，谱集卡会退回默认叠纸封面`)
+  }
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+
+  const total = fs.readdirSync(outDir).reduce(
+    (sum, file) => sum + fs.statSync(path.join(outDir, file)).size,
+    0
+  )
+  console.log(
+    `${family.collection.title}：manifest ${(fs.statSync(manifestPath).size / 1024).toFixed(1)} KB · `
+    + `资产合计 ${(total / 1024 / 1024).toFixed(2)} MB → ${family.out}`
+  )
 }
 
-const manifest = {
-  version: 1,
-  collection: COLLECTION,
-  cover: 'cover.jpg',
-  scores: manifestScores
-}
-const manifestPath = path.join(outDir, 'manifest.json')
-// 不缩进：19 页的 MusicXML 与 sidecar 缩进后接近 10 MB，压掉空白能少一半体积。
-fs.writeFileSync(manifestPath, JSON.stringify(manifest))
+const only = flag('--only', '')
+const requested = flag('--family', '')
+const names = requested === '' ? Object.keys(FAMILIES) : [requested]
+if (only !== '' && names.length > 1) throw new Error('用 --only 时要用 --family 指定曲集')
 
-const totalBytes = fs.readdirSync(outDir).reduce(
-  (total, name) => total + fs.statSync(path.join(outDir, name)).size,
-  0
-)
-console.log(`\nmanifest ${(fs.statSync(manifestPath).size / 1024).toFixed(0)} KB`)
-console.log(`资产合计 ${(totalBytes / 1024 / 1024).toFixed(1)} MB → ${outDir}`)
-console.log('自带曲集数据已生成。')
+for (const name of names) {
+  const family = FAMILIES[name]
+  if (family === undefined) throw new Error(`没有这个曲集：${name}（可选：${Object.keys(FAMILIES).join('、')}）`)
+  await buildFamily(family, only)
+}
+
+console.log('\n自带曲集数据已生成。')

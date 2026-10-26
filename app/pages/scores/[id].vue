@@ -23,6 +23,7 @@ import {
 import type { RecognitionStaff, RecognitionSymbol } from '~/lib/homr/recognition'
 import { buildDisplayXml } from '~/lib/musicxml/display'
 import { readMusicXmlSource, type MusicXmlNote, type ParsedMusicXml } from '~/lib/musicxml/document'
+import { revealInViewport } from '~/lib/reveal'
 
 /**
  * 曲谱页（手机优先）：整份曲谱从上往下排开，跟随推进时自动滚动到当前目标。
@@ -580,10 +581,11 @@ async function performClearAnnotations(): Promise<void> {
 }
 
 /**
- * 把某个全局音符滚到屏幕中间。
+ * 把某个全局音符保持在视口里。
  *
  * 结构化乐谱由 EngravedScore 自己跟随；图片曲谱按页容器的 `data-page-index`
- * 找到锚点，纵向多页共用一条文档滚动条。
+ * 找到锚点，纵向多页共用一条文档滚动条。同一行里的音高差只有几十像素，
+ * `revealInViewport` 不会为每个音重新居中，避免游标推进时页面上下轻推。
  */
 function scrollToNote(index: number): void {
   if (!hasPages.value) return
@@ -594,11 +596,7 @@ function scrollToNote(index: number): void {
       `[data-page-index="${ref.pageIndex}"] [data-note-anchor="${ref.index}"]`
     )
     if (anchor === null) return
-    const rect = anchor.getBoundingClientRect()
-    window.scrollBy({
-      top: rect.top + rect.height / 2 - window.innerHeight / 2,
-      behavior: 'smooth'
-    })
+    revealInViewport(anchor)
   })
 }
 
@@ -762,7 +760,7 @@ const menuItems = computed(() => [
 
     <div
       v-else-if="failure"
-      class="mx-auto grid max-w-2xl gap-4 px-4 py-10"
+      class="mx-auto grid max-w-4xl gap-4 px-4 py-10"
     >
       <UAlert
         color="error"
@@ -787,7 +785,6 @@ const menuItems = computed(() => [
         :title="detail.score.title"
         :back="backTarget"
         :back-label="backLabel"
-        wide
       >
         <template #center>
           <div
@@ -838,7 +835,7 @@ const menuItems = computed(() => [
         </UDropdownMenu>
       </PageHeader>
 
-      <div class="mx-auto flex max-w-3xl items-start gap-0.5 px-0.5 sm:max-w-4xl sm:gap-2 sm:px-2">
+      <div class="mx-auto flex max-w-4xl items-start gap-0.5 px-4 sm:gap-2">
         <ScoreControlsLeft
           :bpm="settings.bpm"
           :beats="settings.beats"
@@ -964,7 +961,7 @@ const menuItems = computed(() => [
         v-else-if="selectedNote && selectedIndex !== null"
         class="fixed inset-x-0 bottom-0 z-30 border-t border-default bg-default/95 backdrop-blur"
       >
-        <div class="mx-auto max-w-3xl">
+        <div class="mx-auto max-w-4xl">
           <NoteDetails
             :key="selectedIndex"
             :index="selectedIndex"

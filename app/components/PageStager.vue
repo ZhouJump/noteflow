@@ -237,7 +237,7 @@ defineExpose({ addPages })
 </script>
 
 <template>
-  <main class="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-3 px-4 py-3">
+  <main class="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-3 px-4 py-3">
     <p
       class="sr-only"
       role="status"
@@ -353,7 +353,7 @@ defineExpose({ addPages })
     v-if="running || recognized || staged.length > 0"
     class="sticky bottom-0 z-20 border-t border-default bg-default px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
   >
-    <div class="mx-auto flex w-full max-w-2xl flex-col gap-2">
+    <div class="mx-auto flex w-full max-w-4xl flex-col gap-2">
       <template v-if="running">
         <UProgress
           :model-value="Math.round(fraction * 100)"

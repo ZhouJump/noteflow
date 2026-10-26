@@ -1,5 +1,8 @@
 /**
- * 麦克风 + 练习跟踪：把 Pitchy 的音高帧交给 `PracticeTracker`，并把状态交给界面。
+ * 麦克风 + 练习跟踪：把音高帧交给 `PracticeTracker`，并把状态交给界面。
+ *
+ * 识别优先走复音链路（AudioWorklet + Basic Pitch），和弦、双声部都能分开；模型
+ * 或 ORT 一时拿不到时退回 Pitchy 单音检测，功能不中断，只是双音会被听成其中一个。
  *
  * 只在浏览器里运行：AudioContext、媒体流和动态导入都发生在 `start()` 之后，
  * 所以 SSR 阶段可以安全地导入这个 composable。停止、完成、页面隐藏都会释放
@@ -14,10 +17,14 @@ import {
   type TrackerUpdate
 } from '~/lib/audio/practice'
 import { describeMicrophoneError } from '~/lib/audio/microphone'
+import { startLivePitch, type LivePitch } from '~/lib/audio/livePitch'
 import { filterTargetsByHand, type HandMode } from '~/lib/audio/score'
 import type { MusicXmlNote } from '~/lib/musicxml/document'
 
 export type PracticePhase = 'idle' | 'starting' | 'listening' | 'paused' | 'done' | 'error'
+
+/** 当前用的检测器：复音模型能分开和弦，退回单音时只能听出一个音。 */
+export type PracticeEngine = 'idle' | 'polyphonic' | 'single'
 
 export interface PracticeSnapshot {
   phase: PracticePhase
@@ -29,11 +36,12 @@ export interface PracticeSnapshot {
   octaveMatches: number
   outcome: TrackerOutcome
   stale: boolean
+  engine: PracticeEngine
   error: string | null
 }
 
-/** 每 40ms 取一帧；两帧稳定音高约 80ms 确认，快速乐句才跟得上。 */
-const FRAME_MS = 40
+/** 每 30ms 取一帧；两帧稳定音高约 60ms 确认，短音也能凑够确认帧数。 */
+const FRAME_MS = 30
 
 export function usePractice(
   notes: () => MusicXmlNote[],
@@ -41,6 +49,7 @@ export function usePractice(
 ) {
   const phase = ref<PracticePhase>('idle')
   const error = ref<string | null>(null)
+  const engine = ref<PracticeEngine>('idle')
   const snapshot = shallowRef<PracticeSnapshot | null>(null)
 
   const active = computed(() => phase.value !== 'idle')
@@ -50,6 +59,8 @@ export function usePractice(
   let tracker: PracticeTracker | null = null
   let stream: MediaStream | null = null
   let context: AudioContext | null = null
+  /** 复音检测引擎；为空说明这次用的是 Pitchy 单音检测。 */
+  let live: LivePitch | null = null
   let timer: number | null = null
   let tickFn: (() => void) | null = null
   let running = false
@@ -59,6 +70,9 @@ export function usePractice(
   function release(): void {
     running = false
     tickFn = null
+    live?.stop()
+    live = null
+    engine.value = 'idle'
     if (timer !== null) {
       clearTimeout(timer)
       timer = null
@@ -91,6 +105,7 @@ export function usePractice(
       octaveMatches: update.octaveMatches,
       outcome: update.outcome,
       stale: update.stale,
+      engine: engine.value,
       error: null
     }
     if (update.done) release()
@@ -116,7 +131,9 @@ export function usePractice(
       audio: {
         echoCancellation: false,
         noiseSuppression: false,
-        autoGainControl: false
+        autoGainControl: false,
+        // 立体声麦克风两路相位不同时会在 down-mix 里互相抵消，单声道更稳。
+        channelCount: { ideal: 1 }
       }
     })
     if (token !== generation) {
@@ -126,6 +143,41 @@ export function usePractice(
     stream = audio
 
     const source = audioContext.createMediaStreamSource(audio)
+
+    // 复音链路优先：小提琴的双音、钢琴的和弦，单音检测根本无法分开。
+    // 等待有上限（模型和 ORT 首次要下十几 MB），拿不到就当场退回单音检测。
+    running = true
+    engine.value = 'polyphonic'
+    try {
+      live = await startLivePitch(audioContext, source, (frames) => {
+        if (!running || tracker === null || token !== generation) return
+        // 一次推理会带回好几帧，逐帧推进；完成后的帧不再需要。
+        for (const event of frames) {
+          const update = tracker.push({
+            frequency: null,
+            clarity: 1,
+            rms: event.rms,
+            at: event.at,
+            pitches: event.pitches,
+            onsets: event.onsets
+          })
+          publish(update)
+          if (update.done) return
+        }
+      })
+      if (token !== generation) {
+        release()
+        return
+      }
+      return
+    } catch (exception) {
+      if (token !== generation) return
+      // 分片 404、wasm 被拦这些细节只进控制台，界面上一句“用着就行”就够。
+      console.warn('复音检测不可用，退回单音检测', exception)
+      engine.value = 'single'
+      running = false
+    }
+
     const analyser = audioContext.createAnalyser()
     analyser.fftSize = 2048
     analyser.smoothingTimeConstant = 0
@@ -187,6 +239,7 @@ export function usePractice(
         octaveMatches: 0,
         outcome: 'idle',
         stale: false,
+        engine: 'idle',
         error: error.value
       }
       lastKey = ''
@@ -204,6 +257,7 @@ export function usePractice(
       octaveMatches: 0,
       outcome: 'idle',
       stale: false,
+      engine: 'idle',
       error: null
     }
     lastKey = ''
@@ -226,6 +280,7 @@ export function usePractice(
         octaveMatches: 0,
         outcome: 'idle',
         stale: false,
+        engine: 'idle',
         error: error.value
       }
       lastKey = ''
@@ -250,6 +305,7 @@ export function usePractice(
       timer = null
     }
     running = false
+    live?.setPaused(true)
     tracker?.rearm()
     phase.value = 'paused'
     lastKey = ''
@@ -265,7 +321,8 @@ export function usePractice(
 
   function resume(): void {
     if (phase.value !== 'paused') return
-    if (tracker === null || context === null || tickFn === null) return
+    if (tracker === null || context === null) return
+    if (tickFn === null && live === null) return
     tracker.rearm()
     phase.value = 'listening'
     lastKey = ''
@@ -274,7 +331,8 @@ export function usePractice(
     }
     void context.resume().catch(() => {})
     running = true
-    tickFn()
+    live?.setPaused(false)
+    tickFn?.()
   }
 
   async function restart(): Promise<void> {
@@ -304,6 +362,7 @@ export function usePractice(
   return {
     phase,
     error,
+    engine,
     snapshot,
     active,
     starting,

@@ -4,9 +4,9 @@
  * 这里不碰 Web Audio 和 DOM，输入是统一的音高帧，输出是游标状态，因此可以在
  * Node 里用合成帧回归（scripts/check-tracker.mjs）。跟踪原则：
  *
- * - 只按时间向前推进；只匹配当前目标，不向前搜索，漏掉的音必须重新演奏或手动定位。
+ * - 只按时间向前推进，不回退；失配时不会自动跳到后面的音，避免识别错误被当成进度。
  * - 同一拍点按手分组：双手谱要求两只手都在时间窗内各演奏一个音才推进。
- * - 同一个音高持续发声只算一次；重新起音需要静音或音高变化。
+ * - 同一个音高持续发声只算一次；重新起音需要静音、音高变化或明显的音头。
  * - 揉弦造成的半音内抖动不算换音，见 `midiWithHysteresis`。
  * - 弓弦换弓、擦弦偶尔掉一帧：确认起音时容忍一次漏检，不把稳定帧清零。
  * - 八度等价匹配单独计数：单音检测偶尔把基频判成泛音，练习模式仍推进但会提示。
@@ -191,6 +191,16 @@ export interface PitchFrame {
   rms: number
   /** `performance.now()` 毫秒。 */
   at: number
+  /**
+   * 复音检测的活跃音高（MIDI 整数）。给了这个字段就走复音匹配，`frequency`
+   * 不再参与；每帧只表达「此刻有哪些音在响」，不需要判断新起音，跟踪器自己比。
+   */
+  pitches?: number[]
+  /**
+   * 复音检测在同一帧给出的起音音高。钢琴延音、提琴空弦共鸣会让音符持续好几秒，
+   * 只看「正在响」会把整串分解和弦一瞬间推完；有起音信息时只能由它触发推进。
+   */
+  onsets?: number[]
 }
 
 export type TrackerOutcome = 'idle' | 'quiet' | 'unmatched' | 'partial' | 'matched' | 'octave' | 'jumped' | 'done'
@@ -219,15 +229,21 @@ export interface PracticeTrackerOptions {
   handWindowMs: number
   /** 多久没有推进就提示。 */
   staleMs: number
+  /**
+   * 卡住多久以后用听到的音高重新定位前面的目标；0 表示不自动跳。
+   * 只往前看很近的几拍，不会按时间追进度。
+   */
+  recoverMs: number
 }
 
 const DEFAULT_OPTIONS: PracticeTrackerOptions = {
   stableFrames: 2,
-  minClarity: 0.7,
-  minRms: 0.003,
-  releaseRms: 0.0015,
+  minClarity: 0.6,
+  minRms: 0.0015,
+  releaseRms: 0.0008,
   handWindowMs: 1500,
-  staleMs: 4000
+  staleMs: 4000,
+  recoverMs: 1500
 }
 
 export class PracticeTracker {
@@ -251,10 +267,20 @@ export class PracticeTracker {
   private lastAdvanceAt = 0
   private now = 0
   private lastOutcome: TrackerOutcome = 'idle'
+  /** 上一次匹配成功的时间，用来识别连弓换弓、同音重复的第二次起音。 */
+  private lastMatchAt = 0
+  /** 上一帧的 RMS，用来发现音头突然增大的新起音。 */
+  private previousRms = 0
   /** 当前目标里已经听到的手，以及上一次听到手的时间。 */
   private handHits = new Set<number>()
   private handOctave = false
   private lastHandAt = 0
+  /** 复音模式：上一帧的活跃音高，用来区分「新出现」和「一直响着」。 */
+  private previousPitches = new Set<number>()
+  /** 复音模式：上一个已推进目标的音高集合，用来识别同音重复。 */
+  private previousTargetPitches = new Set<number>()
+  /** 复音模式：卡住以后听到的目标之外的音高（只留最近 24 个），用来重新定位。 */
+  private heardRun: number[] = []
 
   constructor(targets: PracticeTarget[], options: Partial<PracticeTrackerOptions> = {}) {
     this.targets = targets
@@ -275,6 +301,9 @@ export class PracticeTracker {
    * 其余帧只更新提示状态。
    */
   push(frame: PitchFrame): TrackerUpdate {
+    if (frame.pitches !== undefined) return this.pushPolyphonic(frame)
+    const previousRms = this.previousRms
+    this.previousRms = frame.rms
     if (this.startedAt === null) {
       this.startedAt = frame.at
       this.lastAdvanceAt = frame.at
@@ -309,6 +338,13 @@ export class PracticeTracker {
     }
 
     const midi = midiWithHysteresis(frequency, this.runMidi)
+    const raw = midiForFrequency(frequency)
+    const target = this.targets[this.index]
+    // 二重奏/伴奏里的低音提琴可能比当前目标低很多。这样的帧不能写进高音声部
+    // 的起音轨迹，否则每一下低音都会把稳定帧清零。
+    if (target !== undefined && !this.withinTargetRange(target, raw)) {
+      return this.report('idle')
+    }
     if (midi !== this.runMidi) {
       this.runMidi = midi
       this.runFrames = 1
@@ -321,14 +357,26 @@ export class PracticeTracker {
       this.runSkips = 0
     }
 
+    if (!this.armed && midi === this.lastMidi) {
+      // 小提琴连弓、重复音时音量不会掉到静音：明显增大的音头也算一次新起音。
+      // 只对当前目标确实包含这个音高时生效，避免弓压波动被当成新起音。
+      const repeatable = this.targets[this.index]?.pitches.includes(midi) ?? false
+      const attack = repeatable
+        && frame.at - this.lastMatchAt >= 120
+        && previousRms > 0
+        && frame.rms >= previousRms * 1.6
+        && frame.rms >= this.options.minRms * 2
+      if (!attack) return this.report('idle')
+      this.armed = true
+      this.runConsumed = false
+      this.runFrames = Math.max(this.runFrames, this.options.stableFrames)
+    }
     if (this.runFrames < this.options.stableFrames || this.runConsumed) {
       return this.report('idle')
     }
-    if (!this.armed && midi === this.lastMidi) return this.report('idle')
 
     this.runConsumed = true
     this.recent = [...this.recent.slice(-(PracticeTracker.JUMP_WINDOW - 1)), midi]
-    const target = this.targets[this.index]
     if (target === undefined) return this.report('done')
 
     // 两声部之间间隔太久就当作重新开始，避免把先后演奏的单音拼成和弦。
@@ -338,7 +386,7 @@ export class PracticeTracker {
     }
     if (this.handHits.size === 0) this.lastHandAt = frame.at
 
-    const match = this.matchHand(target, midi)
+    const match = this.matchHand(target, midi, raw)
     if (match === null) {
       const jump = this.findJump()
       if (jump !== null) return this.performJump(jump, midi)
@@ -348,6 +396,7 @@ export class PracticeTracker {
     this.handHits.add(match.hand)
     this.handOctave ||= match.octave
     this.lastMidi = midi
+    this.lastMatchAt = frame.at
     this.lastAdvanceAt = frame.at
     this.lastHandAt = frame.at
     this.armed = false
@@ -367,6 +416,127 @@ export class PracticeTracker {
   }
 
   /**
+   * 复音帧：每帧给出一组正在响的音高，不再依靠「连续几帧同一个音」确认。
+   *
+   * 起音靠对比上一帧：新出现的音算一次起音，一直响着的音要先等目标音全部
+   * 消失（重新布防）才能再算一次，因此连弓、持续音不会把光标一直往前推。
+   * 和弦里每只手只要命中它自己的任一音高就算这只手到位，和单音路径一致。
+   */
+  private pushPolyphonic(frame: PitchFrame): TrackerUpdate {
+    if (this.startedAt === null) {
+      this.startedAt = frame.at
+      this.lastAdvanceAt = frame.at
+    }
+    this.now = frame.at
+    if (this.done) return this.report('done')
+    const target = this.targets[this.index]
+    if (target === undefined) return this.report('done')
+
+    // 低音伴奏、另一声部里比目标低一个八度以上的音不参与当前目标的匹配。
+    const observed = (frame.pitches ?? []).filter(pitch => Number.isFinite(pitch))
+    const active = observed.filter(pitch => this.withinTargetRange(target, pitch))
+    // 对比上一帧要用过滤前的集合：目标一换，过滤条件就变了，不能跨目标比较。
+    const previous = this.previousPitches
+    this.previousPitches = new Set(observed)
+
+    if (frame.rms < this.options.minRms || active.length === 0) {
+      return this.report('quiet')
+    }
+
+    // 两声部之间隔太久就当作重新开始，避免把先后弹下的音拼成一个和弦。
+    if (this.handHits.size > 0 && frame.at - this.lastHandAt > this.options.handWindowMs) {
+      this.handHits.clear()
+      this.handOctave = false
+    }
+    if (this.handHits.size === 0) this.lastHandAt = frame.at
+
+    // 目标音如果在上一个目标里也出现过、且这一帧之前就在响，就不算新的一次演奏。
+    // 有音头信息时以音头为准：同音重复的第二次起音也有音头，不需要再猜。
+    const fired = frame.onsets === undefined
+      ? active.filter(pitch => !this.previousTargetPitches.has(pitch) || !previous.has(pitch))
+      : active.filter(pitch => frame.onsets?.includes(pitch) === true || !previous.has(pitch))
+    const usable = fired
+
+    let heard = false
+    for (const hand of target.hands) {
+      if (this.handHits.has(hand.hand)) continue
+      // 复音模型直接给出音高，不需要像单音检测那样猜泛音；在这里猜八度只会
+      // 把「目标音还没弹、但泛音早就响着」当成命中，让光标提前跑到前面去。
+      const hit = hand.pitches.find(pitch => usable.includes(pitch))
+      if (hit === undefined) continue
+      this.handHits.add(hand.hand)
+      this.lastMidi = hit
+      heard = true
+    }
+
+    if (!heard) {
+      // 卡住时把听到的目标之外的音高攒起来；一个音被漏检时，靠后面几个音还能找回位置。
+      // 卡住时这些音往往一直在响（延音、空弦共鸣），所以不能只收「新出现」的。
+      for (const pitch of active) {
+        if (!target.pitches.includes(pitch) && this.heardRun[this.heardRun.length - 1] !== pitch) {
+          this.heardRun.push(pitch)
+        }
+      }
+      if (this.heardRun.length > 24) this.heardRun.splice(0, this.heardRun.length - 24)
+      const recovered = this.recover()
+      if (recovered !== null) return recovered
+      return this.report('unmatched')
+    }
+
+    this.lastMatchAt = frame.at
+    this.lastAdvanceAt = frame.at
+    this.lastHandAt = frame.at
+    this.recent = [...this.recent.slice(-(PracticeTracker.JUMP_WINDOW - 1)), this.lastMidi ?? target.pitches[0] ?? 0]
+
+    if (this.handHits.size < target.hands.length) return this.report('partial')
+
+    const octave = this.handOctave
+    this.matched += 1
+    if (octave) this.octaveMatches += 1
+    this.index += 1
+    this.handHits.clear()
+    this.handOctave = false
+    this.lastHandAt = 0
+    this.previousTargetPitches = new Set(target.pitches)
+    this.heardRun = []
+    return this.report('matched')
+  }
+
+  /**
+   * 卡住后的重新定位：最近听到的音高与后面一小段目标对得上，就认为已经越过了
+   * 那个没检出的音，把进度落到位。只在很近的一段里找（最多 12 个目标），
+   * 且 6 个目标里要中 4 个，避免在重复音型里乱跳。
+   */
+  private recover(): TrackerUpdate | null {
+    const stall = this.options.recoverMs
+    if (stall <= 0 || this.now - this.lastAdvanceAt < stall) return null
+    const window = 6
+    const need = 4
+    if (this.heardRun.length < need) return null
+    // 按集合比，不管先后顺序：卡住时听到的音往往是同时挂着好几个。
+    const heard = new Set(this.heardRun.slice(-16))
+    const limit = Math.min(this.targets.length - window, this.index + 12)
+    let best: { start: number, hits: number } | null = null
+    for (let start = this.index + 1; start <= limit; start += 1) {
+      let hits = 0
+      for (let offset = 0; offset < window; offset += 1) {
+        const target = this.targets[start + offset]
+        if (target !== undefined && target.pitches.some(pitch => heard.has(pitch))) hits += 1
+      }
+      if (hits >= need && (best === null || hits > best.hits)) best = { start, hits }
+    }
+    if (best === null) return null
+    this.index = best.start + window
+    this.heardRun = []
+    this.handHits.clear()
+    this.handOctave = false
+    this.lastHandAt = 0
+    this.previousTargetPitches.clear()
+    this.lastAdvanceAt = this.now
+    return this.report(this.done ? 'done' : 'jumped')
+  }
+
+  /**
    * 暂停恢复后重新布防：丢掉暂停前累积的起音帧和半只手的命中，避免把暂停期间
    * 的余音或恢复瞬间的同一口气接上一次匹配。
    */
@@ -383,6 +553,9 @@ export class PracticeTracker {
     this.lastAdvanceAt = this.now
     this.lastOutcome = 'idle'
     this.recent = []
+    this.previousPitches = new Set()
+    this.previousTargetPitches = new Set()
+    this.heardRun = []
     return this.report(this.done ? 'done' : 'idle')
   }
 
@@ -406,6 +579,9 @@ export class PracticeTracker {
     this.lastHandAt = 0
     this.lastOutcome = 'idle'
     this.recent = []
+    this.previousPitches = new Set()
+    this.previousTargetPitches = new Set()
+    this.heardRun = []
     return this.report(this.done ? 'done' : 'idle')
   }
 
@@ -461,16 +637,25 @@ export class PracticeTracker {
     this.lastHandAt = 0
     this.lastAdvanceAt = this.now
     this.lastMidi = midi
+    this.lastMatchAt = this.now
     this.armed = false
     this.runConsumed = true
     return this.report(this.done ? 'done' : 'jumped')
   }
 
   /**
+   * 低于当前目标一个八度以上的帧多半是伴奏/低音提琴，不写进高音声部的轨迹；
+   * 高于目标不限制，演奏者跳到高音区时仍按原来的错音规则处理。
+   */
+  private withinTargetRange(target: PracticeTarget, raw: number): boolean {
+    return target.pitches.some(pitch => raw >= pitch - 12.5)
+  }
+
+  /**
    * 只在当前目标里找能接下这个音高的手；已经听过的右手不会重复计数。
    * 未满足的手优先，两只手同一个音时也能各算一次。
    */
-  private matchHand(target: PracticeTarget, midi: number): { hand: number, octave: boolean } | null {
+  private matchHand(target: PracticeTarget, midi: number, raw: number): { hand: number, octave: boolean } | null {
     const ordered = [
       ...target.hands.filter(hand => !this.handHits.has(hand.hand)),
       ...target.hands.filter(hand => this.handHits.has(hand.hand))
@@ -478,8 +663,12 @@ export class PracticeTracker {
     let octave: { hand: number, octave: boolean } | null = null
     for (const hand of ordered) {
       for (const pitch of hand.pitches) {
-        if (pitch === midi) return { hand: hand.hand, octave: false }
-        if (octave === null && Math.abs(pitch - midi) === 12) {
+        // 目标是已知音高：按 cents 宽容音准，避免小提琴 ±50c 被量化成邻音。
+        if (pitch === midi || Math.abs(pitch - raw) <= 0.55) return { hand: hand.hand, octave: false }
+        if (octave === null && (
+          Math.abs(pitch - midi) === 12
+          || Math.abs(Math.abs(pitch - raw) - 12) <= 0.55
+        )) {
           octave = { hand: hand.hand, octave: true }
         }
       }

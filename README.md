@@ -42,20 +42,21 @@ app/                  应用源码（Nuxt srcDir）
   pages/scores/[id].vue 曲谱页：纵向多页、自动滚动、侧栏、跟随、节拍器、批注
   components/           PageHeader、Verovio 乐谱、页面图、音符卡、跟随/评分面板、成绩对话框、侧栏、批注层
   composables/          Worker 生命周期、Blob 临时地址、麦克风跟随与评分、Web Audio 节拍器
-  lib/audio/            音高换算、练习跟踪与评分时间线（不碰 DOM，可在 Node 里回归）
-  workers/              pipeline.worker.ts，整条 HOMR 链
+  lib/audio/            音高换算、Basic Pitch 窗口切片、练习跟踪与评分时间线（不碰 DOM，可在 Node 里回归）
+  workers/              pipeline.worker.ts（整条 HOMR 链）、pitch.worker.ts（Basic Pitch 逐帧推理）
   lib/homr/             HOMR 的 TS 移植（模型、掩码、谱表、词表、MusicXML）
   lib/musicxml/         安全解析、音符模型、渲染副本
   lib/db/               IndexedDB 实体与仓储（曲谱、谱集、设置、批注、评分记录）
-  lib/presets/          自带曲集的预识别数据与首次安装
+  lib/presets/          自带曲集的 MusicXML、首页预览与首次安装
   lib/verovio.ts        Verovio 懒加载与串行渲染
   lib/vision/           图像前置：缩放、灰度、CLAHE
-public/               运行时静态资源（models/ ort/ 为 ≤10 MB 分片，samples/ verovio/ pdf/ 为复制，均由脚本生成、不入库；
-                      presets/ 是预识别的自带曲集，直接入库；图标、manifest.webmanifest 与 og.png 也直接入库）
+public/               运行时静态资源（models/ ort/ 为 ≤10 MB 分片，verovio/ pdf/ 为复制，均由脚本生成、不入库；
+                      audio/ 是 AudioWorklet 采集与重采样脚本，直接入库；presets/ 是两套自带 MusicXML 曲集，直接入库；
+                      图标、manifest.webmanifest 与 og.png 也直接入库）
 reference/            只读参考资料，不入运行时
   homr/                 上游 HOMR 源码与 ONNX 模型（体积大，本地准备）
   homr-web/             参考实现：可运行的浏览器端 demo（Vite）
-  samples/              样例输入 reference/samples/input/*.jpg（含一份两页 PDF）
+  samples/              样例输入 reference/samples/input/*.jpg（含一份两页 PDF）；录音音频只留本机、不入库
   artifacts/            基准与验收产物（Python 链、参考浏览器输出、本应用输出）
 scripts/              prepare-assets.mjs、check-bundle-size.mjs、各 check-*.mjs
 ```
@@ -76,24 +77,37 @@ pnpm assets          # 准备模型分片、样例与 Verovio，并生成 public
 | 运行时路径 | 来源 |
 | --- | --- |
 | `public/models/*.onnx.part-*`、`*.onnx.json` | `reference/homr/homr/{segmentation,transformer}/*.onnx`，按 10 MB 切片 |
-| `public/samples` | `reference/samples/input`（逐个文件同步，目录里其他素材原样保留） |
+| `public/models/nmp.onnx` | Basic Pitch 多音转录模型（225 KB），`BASIC_PITCH_MODEL_URL` 可换源；拿不到时前端退回单音检测 |
 | `public/ort/ort.wasm.js`、`ort-wasm-simd-threaded.js` | `node_modules/onnxruntime-web/dist`（API 与胶水代码） |
 | `public/ort/ort-wasm-simd-threaded.wasm.*` | 同目录的 wasm 按 10 MB 切片，附 `ort-wasm-simd-threaded.wasm.json` 清单 |
 | `public/verovio/*.js` | `node_modules/verovio/dist`（排版引擎，wasm 内嵌，复制） |
 | `public/pdf/pdf.min.js`、`pdf.worker.min.js` | `node_modules/pdfjs-dist/build`（PDF 解析与渲染，`.mjs` 落成 `.js`） |
 | `public/pdf/{cmaps,standard_fonts,wasm}` | `node_modules/pdfjs-dist`（中文 CMap、标准字体与图像解码器，渲染时按需取） |
 
-`public/presets/violin` 是预识别的「小提琴经典曲集」（4 首、19 页），随仓库入库。
-应用首次打开谱架时把它写进 IndexedDB，删除后不会再出现，清除站点数据后重新安装。
-重建时先启动 `pnpm dev`，把四份「曲名 — 作曲家.pdf」与封面 `cover.webp` 放进
-`public/samples/violin`，再执行 `node scripts/build-preset.mjs`：脚本走真实的
-PDF 导入与 HOMR 识别链路，逐页导出图片、MusicXML 与定位侧车，约 15–20 分钟。
-`pnpm assets` 只同步 `reference/samples/input` 里的文件，不会清掉这个目录。
+`public/presets/` 是两套自带曲集，随仓库入库：`piano/` 是「钢琴经典曲集」（4 首），
+`violin/` 是「小提琴经典曲集」（4 首巴赫无伴奏乐章，BWV 1001–1006）。每个目录里的
+`manifest.json` 记录曲名、作曲者与统计，`*.musicxml` 是压掉标签间空白的乐谱原文，
+`*.svg` 是 Verovio 渲染的首页预览，直接当谱架缩略图。应用首次打开谱架时把它们写进
+IndexedDB，导入后与自己导入的 MusicXML 没有区别——没有页面图片，版面由 Verovio 现场排版；
+删除后不会再出现，清除站点数据后重新安装。旧版走图片识别的「小提琴经典曲集」会在
+首次打开谱架时自动清掉。
+
+重建时执行 `node scripts/build-preset.mjs`（默认两套都重建，`--family piano|violin` 只做一套，
+`--only <曲名>` 只换一首）：钢琴从 `musetrainer/library` 取 `.mxl`，小提琴从
+`salu133445/bach-violin-dataset` 的参考乐谱取 `.mxl`（本机有 `reference/samples/bach-violin-dataset-v1.0`
+时优先读本地）。下载缓存在 `.cache/preset-src`，脚本用纯 JS 解 zip、去掉 DOCTYPE 与标签间空白，
+再用 Node 版 Verovio 渲染首页 SVG，写出 manifest 与四份乐谱，几秒钟完成。换曲目改脚本里的
+`FAMILIES` 即可；两套封面 `cover.webp` 都是手绘素材，脚本不会删它。
+`pnpm assets` 只准备模型、ORT、Verovio 与 PDF.js，不会碰这个目录。
 
 构建环境（例如 EdgeOne）里没有 `reference/homr` 时，`prepare-assets` 会从
 `https://github.com/liebharc/homr/releases/download/onnx_checkpoints/` 下载 fp32 模型
 （约 152 MB），解压后缓存在 `.cache/noteflow-models/` 再切片。下载慢或不可达时用
 `HOMR_MODEL_BASE` 指向镜像；拿不到模型会让构建直接失败，而不是产出没有模型的包。
+
+下载默认直连。本机需要代理时设置 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` 环境变量即可，
+`prepare-assets` 会用 `http.setGlobalProxyFromEnv()` 把它应用到模型下载——Node 的 fetch
+不会自动读取这些变量。
 
 ## 开发
 
@@ -181,17 +195,31 @@ BPM 对话框输入 96、节奏型对话框切到 3/4 再切回 4/4（拍点数�
 回到谱架确认封面替掉默认叠纸、名称移到卡片下方且封面内不再重复标题；同一个对话框里改名后，把其中一首拖到底部移出区后
 回到谱架，再把独立曲谱拖到谱集卡上重新加入，最后删除谱集确认两首曲谱都恢复为独立曲谱。
 最后从 `/import/pdf` 导入一份两页 PDF，确认逐页渲染成带页码的缩略图、识别完成后保存成另一份两页曲谱。
-最后移除干净库的跳过标记并重新打开谱架，确认首次自动安装「小提琴经典曲集」：封面、4 首曲谱，
-且每首的曲名与作曲家分开保存（例如「G 大调小步舞曲 · 佩措尔德」）。
-通过时输出 80 项检查与截图，写在 `reference/artifacts/m5/<页名>/`。
+最后移除干净库的跳过标记并重新打开谱架，确认首次自动安装「钢琴经典曲集」与「小提琴经典曲集」：
+两张谱集卡各有封面与 4 首曲谱，每首的曲名与作曲家分开保存（例如「G 大调小步舞曲 · 佩措尔德」
+「D 小调恰空 · 巴赫」），且都是没有页面图片的结构化 MusicXML（版面由 Verovio 现场排版）。
+通过时输出全部检查项与截图，写在 `reference/artifacts/m5/<页名>/`。
 
 ### 跟随练习（M6）
 
 ```bash
 pnpm dev
 pnpm check:tracker       # 合成音高帧，不需要浏览器
+pnpm check:pitch         # 窗口切片 + Basic Pitch 推理，不需要浏览器
+pnpm check:resample      # 48000 → 22050 重采样，不需要浏览器
 pnpm check:practice      # 真实浏览器 + 假麦克风
 ```
+
+识别链路是 AudioWorklet → Worker → Basic Pitch：`public/audio/pitch-worklet.js` 把麦克风
+（通常是 48 kHz）降采样到 22050 Hz，攒成 1024 采样的块转给 `pitch.worker.ts`；模型每次吃 1.99 s
+的窗口、每 0.25 s 滑一次，只把每窗新增的帧发回主线程，所以延迟约等于一次推理而不是整窗。
+主线程用 `PracticeTracker.pushPolyphonic` 以 onset 为准推进，卡住后按音集合软恢复。模型或 ORT
+4 s 内没准备好退回 Pitchy 单音检测，状态条会显示「单音检测」。
+
+`check:resample` 验 8 项重采样指标（长度比、440 Hz 过零、直流增益、15 kHz 抑制、分块与整段一致）；
+`check:pitch` 用 9 项纯逻辑确认窗口切片不漏帧、不重复（128 / 1024 / 4096 / 65536 采样四种块大小，
+以及推理变慢后自动放宽间隔），再在有 `public/models/nmp.onnx` 时跑 6 项真实推理，确认 note/onset
+两路没有接反、单音与三和弦都能检出。
 
 跟踪器不依赖 Web Audio，`scripts/check-tracker.mjs` 用合成帧验证 32 项规则：稳定帧确认、持续音
 只算一次、错音不推进、后面的音不会跳过当前目标、重复音重新起音、八度等价、低清晰度忽略、
@@ -199,11 +227,25 @@ pnpm check:practice      # 真实浏览器 + 假麦克风
 手动定位、连续 8 键匹配别处后的追寻跳转和超时提示。报告在 `reference/artifacts/m6/tracker.run.json`。
 
 `check:practice` 生成一份双谱表八音 MusicXML（右手 C5–F5、左手 C4–F4）和对应的 WAV，用 Edge 的
-`--use-file-for-fake-audio-capture` 当作麦克风输入；应用走真实的 getUserMedia → AudioContext →
-Pitchy → 跟踪器链路。WAV 开头先反复只演奏右手 C5，脚本确认状态保持“正在聆听”、游标停在“第 1 / 4 音”；
+`--use-file-for-fake-audio-capture` 当作麦克风输入；应用走真实的 getUserMedia → AudioWorklet →
+Basic Pitch → 跟踪器链路。WAV 开头先反复只演奏右手 C5，脚本确认状态保持“正在聆听”、游标停在“第 1 / 4 音”；
 随后双手交替，确认每个目标出现两个不同颜色的箭头、左右手图标用各自主题色且左手镜像、音高推进
 到第 3 个音、暂停后保持不动、恢复后继续监听、结束后面板与箭头消失，再点第三个音符确认能重新
 定位；最后导入一份单谱表曲谱，确认不显示声部筛选，共 17 项检查；截图和报告在 `reference/artifacts/m6/`。
+
+复音链路的参数（`app/lib/audio/basicPitch.ts`：hop 0.25 s、note 阈值 0.2、onset 阈值 0.5）在两份
+离线数据集上跑真实 `PracticeTracker` 的到达率：
+
+| 样本 | 到达率 | 卡住次数 |
+| --- | --- | --- |
+| 钢琴 bach_846（MAPS 合成） | 100%（99 / 99） | 0 |
+| 钢琴 chpn-p1（MAPS 合成） | 73.0%（111 / 152） | — |
+| 提琴 Double（BWV 1002） | 100%（82 / 82） | 0 |
+| 提琴 Sarabande（BWV 1002） | 100%（27 / 27） | 6 |
+| 提琴 Presto（BWV 1001） | 65.2%（88 / 135） | 5 |
+
+`hop` 取 0.5 s 时 chpn-p1 只有 22–36%、Presto 56.5%，所以窗口按 0.25 s 滑动；Presto 这类快速
+换弦的乐句仍会漏音，是下一步调优的对象。
 
 ### 评分模式（M7-评分）
 
@@ -220,9 +262,10 @@ node scripts/check-scoring.mjs --pure
 演奏完后成绩对话框列出 8 个逐音结果，评分记录写入 `runs` store，曲谱菜单里的“评分记录”能打开
 本次成绩详情；再单独开始一轮确认暂停后继续会回到等待当前音。报告和截图在 `reference/artifacts/m7/`。
 
-当前边界：验收使用 Chromium 假麦克风，尚未用真实乐器或手机麦克风记录验证；Pitchy 是单音检测，
-同一只手的和弦演奏任意一个音就算这只手到齐，双手同时发声无法完整评分；两只手必须在上一次命中
-后 1.5 秒内各演奏一次，超过时间窗只保留后演奏的那只手。
+当前边界：验收使用 Chromium 假麦克风与离线数据集，尚未用真实乐器或手机麦克风记录验证；评分模式
+仍走 Pitchy 单音检测（`ScoreTracker` 按 BPM 时间线判定），同一只手的和弦演奏任意一个音就算这只手
+到齐，双手同时发声无法完整评分；两只手必须在上一次命中后 1.5 秒内各演奏一次，超过时间窗只保留
+后演奏的那只手。
 
 ### PWA 安装
 

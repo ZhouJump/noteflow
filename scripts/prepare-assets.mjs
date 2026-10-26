@@ -6,7 +6,6 @@
  * 准备内容：
  *   public/models/{segnet,encoder,decoder}.onnx.part-*  <- reference/homr 或构建时下载，10 MB 分片
  *   public/models/{segnet,encoder,decoder}.onnx.json    <- 分片清单
- *   public/samples                                      <- reference/samples/input（逐个文件同步）
  *   public/ort/ort.wasm.js                              <- node_modules/onnxruntime-web/dist（API）
  *   public/ort/ort-wasm-simd-threaded.js                <- node_modules/onnxruntime-web/dist（胶水代码）
  *   public/ort/ort-wasm-simd-threaded.wasm.*            <- 由 wasm 切成的 10 MB 分片
@@ -21,17 +20,25 @@
  *
  * reference/homr、reference/samples 不入库（见 .gitignore）。构建环境里没有
  * reference/homr 时，三个 ONNX 模型从 homr 的 GitHub Release 下载，解压后缓存在
- * .cache/noteflow-models/；下载地址可用 HOMR_MODEL_BASE 覆盖（镜像或代理）。
+ * .cache/noteflow-models/；下载地址可用 HOMR_MODEL_BASE 覆盖（镜像）。
  *
- * 所有资产都按 ≤10 MB 落盘：模型与 wasm 切成分片，前端按清单拼回；Verovio 和示例图
+ * 下载走 HTTP(S)_PROXY：Node 的 fetch 默认不读这两个变量，这里用
+ * http.setGlobalProxyFromEnv() 把它们应用到全局 dispatcher。代理取自进程环境变量
+ * （本机系统变量即可），没有代理的环境（例如 CI）保持直连。
+ *
+ * 所有资产都按 ≤10 MB 落盘：模型与 wasm 切成分片，前端按清单拼回；Verovio 与 PDF.js
  * 直接复制而不是符号链接——部署只会带走 .output/.edgeone，链接指向的仓库外路径不会跟着走。
  */
 
 import fs from 'node:fs'
+import http from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { unzipSync } from 'fflate'
+
+// 旧版 Node 没有这个 API，拿不到代理时退回直连，不影响下载逻辑。
+http.setGlobalProxyFromEnv?.()
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
@@ -41,8 +48,6 @@ const ort = path.join(root, 'node_modules/onnxruntime-web/dist')
 const verovio = path.join(root, 'node_modules/verovio/dist')
 const pdfjs = path.join(root, 'node_modules/pdfjs-dist')
 const modelCache = path.join(root, '.cache/noteflow-models')
-/** 上一次同步到 public/samples 的文件清单，用来删掉来源里已经不存在的旧样例。 */
-const samplesState = path.join(root, '.cache/noteflow-assets/samples.json')
 /** 单个分片的上限，与 `scripts/check-bundle-size.mjs` 保持一致。 */
 const CHUNK = 10_000_000
 /** fp32 模型：与 reference/homr 在 CPU 上用的是同一组权重。 */
@@ -50,6 +55,13 @@ const MODEL_BASE = (
   process.env.HOMR_MODEL_BASE
   ?? 'https://github.com/liebharc/homr/releases/download/onnx_checkpoints/'
 ).replace(/\/?$/, '/')
+/**
+ * Basic Pitch 多音转录模型，225 KB，输入 22050Hz 波形，输出逐帧的 note/onset。
+ * 练习模式用它替代只能测单音的 Pitchy。
+ */
+const BASIC_PITCH_URL = process.env.BASIC_PITCH_MODEL_URL
+  ?? 'https://huggingface.co/AEmotionStudio/basic-pitch-onnx-models/resolve/main/nmp.onnx'
+const BASIC_PITCH_MODEL = 'nmp.onnx'
 
 const models = [
   ['segmentation/segnet_308-3296ccd40960f90ca6ab9c035cca945675d30a0f.onnx', 'segnet.onnx'],
@@ -107,51 +119,6 @@ function copyAsset(source, rel) {
   console.log(`${rel} -> ${path.relative(root, source)}`)
 }
 
-/**
- * 样例目录：只同步来自 `reference/samples/input` 的文件。
- *
- * `public/samples` 里还可能有用户自己放的素材（例如预置曲集的原始 PDF），
- * 所以不能整目录替换：只更新来源里的文件，删掉上一次由本脚本复制、现在来源
- * 里已经不存在的文件，其余内容原样保留。返回 false 表示来源目录不存在。
- */
-function prepareSamples() {
-  const source = path.join(root, 'reference/samples/input')
-  const target = path.join(pub, 'samples')
-  if (!fs.existsSync(source)) {
-    console.log(`missing: ${path.relative(root, source)}`)
-    return false
-  }
-
-  const files = listFiles(source)
-  let managed = []
-  try {
-    managed = JSON.parse(fs.readFileSync(samplesState, 'utf8')).files ?? []
-  } catch {
-    // 首次运行或缓存损坏：以这次同步的结果作为清单。
-  }
-
-  for (const relative of files) {
-    const from = path.join(source, relative)
-    const to = path.join(target, relative)
-    if (fs.existsSync(to) && fs.statSync(to).isFile() && fs.statSync(to).size === fs.statSync(from).size) {
-      continue
-    }
-    fs.mkdirSync(path.dirname(to), { recursive: true })
-    fs.copyFileSync(from, to)
-    console.log(`samples/${relative} -> ${path.relative(root, from)}`)
-  }
-  for (const relative of managed) {
-    if (files.includes(relative)) continue
-    fs.rmSync(path.join(target, relative), { force: true })
-    console.log(`samples/${relative} (removed)`)
-  }
-
-  fs.mkdirSync(path.dirname(samplesState), { recursive: true })
-  fs.writeFileSync(samplesState, `${JSON.stringify({ files }, null, 2)}\n`)
-  console.log(`samples (${files.length} 个文件已同步)`)
-  return true
-}
-
 /** 找到模型源文件；本地没有就从 Release 下载并解压到缓存目录。 */
 async function ensureModel(relative) {
   const local = path.join(homr, relative)
@@ -161,7 +128,9 @@ async function ensureModel(relative) {
   if (fs.existsSync(cached)) return cached
 
   fs.mkdirSync(modelCache, { recursive: true })
-  const url = `${MODEL_BASE}${path.basename(name, '.onnx')}.zip`
+  // Release 资产用的是完整 checkpoint 名（segnet_308-…、encoder_pytorch_model_396-…），
+  // 落盘名（segnet.onnx）只是本地命名，不能拿来拼下载地址。
+  const url = `${MODEL_BASE}${path.basename(relative, '.onnx')}.zip`
   let lastError = null
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
@@ -194,8 +163,8 @@ function modelsKept(target, sources) {
         if (fs.statSync(path.join(target, part)).size !== expected) return false
       }
     }
-    // 旧版本留下的整文件链接不再需要。
-    return !fs.readdirSync(target).some(entry => entry.endsWith('.onnx'))
+    // 旧版本留下的整文件链接不再需要；Basic Pitch 模型是例外，它本来就不分片。
+    return !fs.readdirSync(target).some(entry => entry.endsWith('.onnx') && entry !== BASIC_PITCH_MODEL)
   } catch {
     return false
   }
@@ -235,6 +204,48 @@ async function prepareModels() {
     fs.writeFileSync(path.join(target, `${name}.json`), `${JSON.stringify(manifest, null, 2)}\n`)
     console.log(`${name} -> ${parts.length} 片（${size} 字节）`)
   }
+}
+
+/**
+ * Basic Pitch 模型只有 225 KB，远小于分片阈值，直接拷整个文件。
+ * 下载失败不报错：前端会在模型 404 时退回 Pitchy 单音检测。
+ */
+async function prepareBasicPitch() {
+  const cached = path.join(modelCache, BASIC_PITCH_MODEL)
+  if (!fs.existsSync(cached)) {
+    fs.mkdirSync(modelCache, { recursive: true })
+    let lastError = null
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        console.log(`download: ${BASIC_PITCH_URL}`)
+        const response = await fetch(BASIC_PITCH_URL, { signal: AbortSignal.timeout(10 * 60_000) })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        // 这里很容易拿到一份 HTML 错误页，按大小先挡一次。
+        if (bytes.length < 100_000) throw new Error(`文件过小（${bytes.length} 字节）`)
+        fs.writeFileSync(cached, bytes)
+        console.log(`downloaded: ${BASIC_PITCH_MODEL}（${bytes.length} 字节）`)
+        break
+      } catch (error) {
+        lastError = error
+        console.log(`  第 ${attempt} 次失败：${error.message}`)
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 3000))
+      }
+    }
+    if (!fs.existsSync(cached)) {
+      console.log(`警告：拿不到 ${BASIC_PITCH_MODEL}（${lastError?.message}），练习会退回单音检测`)
+      return
+    }
+  }
+  const target = path.join(pub, 'models')
+  fs.mkdirSync(target, { recursive: true })
+  const to = path.join(target, BASIC_PITCH_MODEL)
+  if (fs.existsSync(to) && fs.statSync(to).size === fs.statSync(cached).size) {
+    console.log(`${BASIC_PITCH_MODEL} (kept)`)
+    return
+  }
+  fs.copyFileSync(cached, to)
+  console.log(`models/${BASIC_PITCH_MODEL} -> ${path.relative(root, cached)}`)
 }
 
 /**
@@ -286,7 +297,6 @@ function prepareOrt() {
 
 fs.mkdirSync(pub, { recursive: true })
 const missing = []
-if (!prepareSamples()) missing.push('samples')
 for (const [source, rel] of copies) {
   if (!fs.existsSync(source)) {
     console.log(`missing: ${path.relative(root, source)}`)
@@ -305,4 +315,5 @@ for (const legacy of ['verovio/verovio-module.mjs', 'verovio/verovio.mjs']) {
 }
 
 await prepareModels()
+await prepareBasicPitch()
 prepareOrt()

@@ -14,6 +14,8 @@
     "check:score": "node scripts/check-score.mjs",
     "check:tracker": "node scripts/check-tracker.mjs",
     "check:practice": "node scripts/check-practice.mjs",
+    "check:pitch": "node scripts/check-pitch.mjs",
+    "check:resample": "node scripts/check-resample.mjs",
     "check:scoring": "node scripts/check-scoring.mjs",
     "check:size": "node scripts/check-bundle-size.mjs"
   },

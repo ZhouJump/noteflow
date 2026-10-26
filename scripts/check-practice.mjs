@@ -16,6 +16,7 @@
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -29,9 +30,21 @@ const flag = (name, fallback) => {
 
 const base = flag('--url', 'http://127.0.0.1:3000').replace(/\/$/, '')
 const outDir = path.resolve(flag('--out', path.join(root, 'reference/artifacts/m6')))
-const BROWSER = process.env.BROWSER ?? '/usr/bin/microsoft-edge'
+/** 默认用系统 Edge；Windows 上的安装路径不在 PATH 里，按常见位置找一次。 */
+function findBrowser() {
+  if (process.env.BROWSER) return process.env.BROWSER
+  if (process.platform !== 'win32') return '/usr/bin/microsoft-edge'
+  const candidates = [
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files/Microsoft/Edge/Application/msedge.exe'
+  ]
+  return candidates.find(file => fs.existsSync(file)) ?? 'msedge'
+}
+
+const BROWSER = findBrowser()
 const PORT = Number(process.env.CDP_PORT ?? 9336)
-const workDir = fs.mkdtempSync('/tmp/noteflow-m6-')
+// 临时目录用系统默认：Linux 上是 /tmp，Windows 上不会因为 /tmp 不存在而 ENOENT。
+const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noteflow-m6-'))
 const fixturePath = path.join(workDir, 'practice.musicxml')
 const singlePath = path.join(workDir, 'single.musicxml')
 const wavPath = path.join(workDir, 'practice.wav')
@@ -184,7 +197,7 @@ async function waitFor(fn, timeout, label) {
   throw new Error(`timeout: ${label}${lastError ? `（${lastError.message}）` : ''}`)
 }
 
-const profile = fs.mkdtempSync('/tmp/noteflow-m6-edge-')
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'noteflow-m6-edge-'))
 const browser = spawn(
   BROWSER,
   [
@@ -439,7 +452,7 @@ try {
     const status = await text('[data-test="practice-status"]')
     const progress = await text('[data-test="practice-progress"]')
     waiting = `${progress} · ${status}`
-    if (!progress.includes('第 1 / 4') || status !== '正在聆听') stayedOnFirst = false
+    if (!progress.includes('第 1 / 4') || !status.startsWith('正在聆听')) stayedOnFirst = false
     if (Date.now() - practiceStartedAt >= 3500) break
     await sleep(200)
   }

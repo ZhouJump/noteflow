@@ -64,7 +64,7 @@ const toneClass = computed(() => {
     data-test="score-panel"
     :data-phase="snapshot?.phase ?? 'idle'"
   >
-    <div class="mx-auto max-w-3xl px-3 py-2">
+    <div class="mx-auto max-w-4xl px-4 py-2">
       <div class="flex items-baseline gap-2">
         <span
           class="truncate text-lg font-semibold tracking-tight"

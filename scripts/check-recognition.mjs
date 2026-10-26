@@ -10,6 +10,7 @@
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -25,7 +26,18 @@ const image = path.resolve(flag('--image', path.join(root, 'reference/samples/in
 const page = path.basename(image, path.extname(image))
 const url = flag('--url', 'http://127.0.0.1:3000/import/images')
 const outDir = path.resolve(flag('--out', path.join(root, 'reference/artifacts/nuxt-browser')), page)
-const BROWSER = process.env.BROWSER ?? '/usr/bin/microsoft-edge'
+/** 默认用系统 Edge；Windows 上的安装路径不在 PATH 里，按常见位置找一次。 */
+function findBrowser() {
+  if (process.env.BROWSER) return process.env.BROWSER
+  if (process.platform !== 'win32') return '/usr/bin/microsoft-edge'
+  const candidates = [
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files/Microsoft/Edge/Application/msedge.exe'
+  ]
+  return candidates.find(file => fs.existsSync(file)) ?? 'msedge'
+}
+
+const BROWSER = findBrowser()
 const PORT = Number(process.env.CDP_PORT ?? 9334)
 const TIMEOUT = Number(process.env.TIMEOUT ?? 15 * 60_000)
 
@@ -45,7 +57,8 @@ async function waitFor(fn, timeout, label) {
   throw new Error(`timeout: ${label}`)
 }
 
-const profile = fs.mkdtempSync('/tmp/noteflow-edge-')
+// 临时目录用系统默认：Linux 上是 /tmp，Windows 上不会因为 /tmp 不存在而 ENOENT。
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'noteflow-edge-'))
 const browser = spawn(
   BROWSER,
   [

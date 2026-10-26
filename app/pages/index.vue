@@ -2,7 +2,7 @@
 import { addScoreToCollection, createCollectionFromScores, listShelf, type ShelfCollection } from '~/lib/db/collections'
 import type { CollectionRecord, ScoreRecord } from '~/lib/db/schema'
 import { describeStorageError } from '~/lib/db/scores'
-import { installViolinPreset } from '~/lib/presets/violin'
+import { installPianoPreset, installViolinPreset } from '~/lib/presets/library'
 
 /**
  * 谱架：谱集在前，独立曲谱在后，只读取本机 IndexedDB，不展示演示数据。
@@ -260,6 +260,7 @@ function onKeyDown(event: KeyboardEvent): void {
 
 async function loadWithPreset(): Promise<void> {
   // 首次打开先把自带曲集写进本机库，再一次性读谱架，避免闪一下空状态。
+  await installPianoPreset()
   await installViolinPreset()
   await load()
 }
@@ -292,7 +293,7 @@ onBeforeUnmount(() => {
       >{{ totalScores }} 首</span>
     </PageHeader>
 
-    <div class="mx-auto max-w-2xl px-4 pt-4">
+    <div class="mx-auto max-w-4xl px-4 pt-4">
       <UAlert
         v-if="failure"
         class="mb-4"

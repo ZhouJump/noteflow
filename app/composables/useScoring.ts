@@ -18,8 +18,8 @@ import {
 } from '~/lib/audio/scoring'
 import type { MusicXmlNote } from '~/lib/musicxml/document'
 
-/** 每 40ms 一帧；两帧稳定音高约 80ms 确认起音。 */
-const FRAME_MS = 40
+/** 每 30ms 一帧；两帧稳定音高约 60ms 确认起音。 */
+const FRAME_MS = 30
 
 function emptySnapshot(phase: ScoringPhase, total: number, message: string | null): ScoreSnapshot {
   return {
@@ -120,7 +120,9 @@ export function useScoring(
       audio: {
         echoCancellation: false,
         noiseSuppression: false,
-        autoGainControl: false
+        autoGainControl: false,
+        // 立体声麦克风两路相位不同时会在 down-mix 里互相抵消，单声道更稳。
+        channelCount: { ideal: 1 }
       }
     })
     if (token !== generation) {

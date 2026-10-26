@@ -6,17 +6,17 @@
  * 而左右移动；右侧操作、顶栏正中的内容与第二行附加内容分别用默认插槽、
  * `center` 插槽与 `sub` 插槽。安装成桌面应用后，这一栏同时充当自定义标题栏：
  * `data-app-titlebar` 让全局样式避让窗口按钮并允许拖动。
+ *
+ * 顶栏与页面正文共用同一列宽（max-w-4xl，移动端 px-4），切换页面时内容不会
+ * 左右跳；曲谱页需要给乐谱留宽度，其余页面也按这一列居中。
  */
 withDefaults(defineProps<{
   title: string
   back?: string
   backLabel?: string
-  /** 宽页面（曲谱演奏页）与正文共用更窄的左右留白。 */
-  wide?: boolean
 }>(), {
   back: undefined,
-  backLabel: '返回',
-  wide: false
+  backLabel: '返回'
 })
 
 const slots = useSlots()
@@ -30,11 +30,8 @@ const centered = computed(() => slots.center !== undefined)
     data-app-titlebar
   >
     <div
-      class="mx-auto h-12 items-center gap-1"
-      :class="[
-        wide ? 'max-w-3xl px-0.5 sm:max-w-4xl sm:px-2' : 'max-w-2xl px-4',
-        centered ? 'grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]' : 'flex'
-      ]"
+      class="mx-auto h-12 max-w-4xl items-center gap-1 px-4"
+      :class="centered ? 'grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]' : 'flex'"
     >
       <div class="flex min-w-0 flex-1 items-center gap-1">
         <!-- 返回位固定 32px，有无返回按钮标题都从同一处开始。 -->

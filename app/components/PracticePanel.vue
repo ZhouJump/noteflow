@@ -32,7 +32,8 @@ const statusLabel = computed(() => {
   if (snapshot.phase === 'starting') return '正在打开麦克风'
   if (snapshot.phase === 'paused') return '已暂停'
   if (snapshot.phase === 'done') return '已完成'
-  return '正在聆听'
+  // 退回单音检测时和弦只能听出一个音，表现为“能跟上但总差一点”，标出来好判断。
+  return snapshot.engine === 'single' ? '正在聆听 · 单音检测' : '正在聆听 · 复音检测'
 })
 
 const percent = computed(() => {
@@ -48,7 +49,7 @@ const percent = computed(() => {
     data-test="practice-panel"
     :data-phase="snapshot?.phase ?? 'idle'"
   >
-    <div class="mx-auto max-w-3xl px-3 py-2">
+    <div class="mx-auto max-w-4xl px-4 py-2">
       <div class="flex items-baseline gap-2">
         <span
           class="truncate text-lg font-semibold tracking-tight"

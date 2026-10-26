@@ -20,11 +20,13 @@
  *   - MusicXML 导入走同一个曲谱页，没有页面图与纵向页容器；
  *   - 长按拖动可把两首独立曲谱组成谱集，拖到谱集卡可加入，删除谱集后曲谱回到谱架；
  *   - 多页 PDF 逐页渲染成缩略图，识别后保存成同一份两页曲谱；
- *   - 首次打开自动安装「小提琴经典曲集」，曲名与作曲家分开保存。
+ *   - 首次打开自动安装自带的「钢琴经典曲集」与「小提琴经典曲集」（结构化 MusicXML），
+ *     曲名与作曲家分开保存。
  */
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -39,13 +41,29 @@ const flag = (name, fallback) => {
 const firstImage = path.resolve(flag('--image', path.join(root, 'reference/samples/input/永远同在1.jpg')))
 const secondImage = path.resolve(flag('--image2', path.join(root, 'reference/samples/input/永远同在2.jpg')))
 const page = path.basename(firstImage, path.extname(firstImage))
+// MusicXML 只当导入用例：优先用参考实现的产物，新环境里没有就退回入库的 expected。
+const musicxmlCandidates = [
+  path.join(root, 'reference/artifacts/browser', page, `${page}.musicxml`),
+  path.join(root, 'reference/samples/expected', page, `${page}.musicxml`)
+]
 const musicxmlPath = path.resolve(
-  flag('--musicxml', path.join(root, 'reference/artifacts/browser', page, `${page}.musicxml`))
+  flag('--musicxml', musicxmlCandidates.find(file => fs.existsSync(file)) ?? musicxmlCandidates[0])
 )
 const pdfPath = path.resolve(flag('--pdf', path.join(root, 'reference/samples/input/永远同在1.pdf')))
 const base = flag('--url', 'http://127.0.0.1:3000').replace(/\/$/, '')
 const outDir = path.resolve(flag('--out', path.join(root, 'reference/artifacts/m5')), page)
-const BROWSER = process.env.BROWSER ?? '/usr/bin/microsoft-edge'
+/** 默认用系统 Edge；Windows 上的安装路径不在 PATH 里，按常见位置找一次。 */
+function findBrowser() {
+  if (process.env.BROWSER) return process.env.BROWSER
+  if (process.platform !== 'win32') return '/usr/bin/microsoft-edge'
+  const candidates = [
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files/Microsoft/Edge/Application/msedge.exe'
+  ]
+  return candidates.find(file => fs.existsSync(file)) ?? 'msedge'
+}
+
+const BROWSER = findBrowser()
 const PORT = Number(process.env.CDP_PORT ?? 9335)
 const TIMEOUT = Number(process.env.TIMEOUT ?? 20 * 60_000)
 
@@ -71,7 +89,8 @@ async function waitFor(fn, timeout, label) {
   throw new Error(`timeout: ${label}${lastError ? `（${lastError.message}）` : ''}`)
 }
 
-const profile = fs.mkdtempSync('/tmp/noteflow-m5-')
+// 临时目录用系统默认：Linux 上是 /tmp，Windows 上不会因为 /tmp 不存在而 ENOENT。
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'noteflow-m5-'))
 
 /** 自动滚动验收用静音“麦克风”，让练习停在当前目标而不是被假音推进。 */
 function writeSilence(file) {
@@ -541,7 +560,9 @@ function readLibrary() {
         title: entry.title,
         composer: entry.composer ?? '',
         collectionId: entry.collectionId ?? null,
-        collectionOrder: entry.collectionOrder ?? null
+        collectionOrder: entry.collectionOrder ?? null,
+        scoreFormat: entry.scoreFormat ?? 'image',
+        pageCount: entry.pageCount ?? 0
       })),
       collections: collections.map(entry => ({
         id: entry.id,
@@ -1417,13 +1438,13 @@ try {
   const presetShelf = await waitFor(async () => {
     const titles = await evaluate(`[...document.querySelectorAll('[data-test="collection-title"]')]
       .map(item => item.textContent.trim())`)
-    return titles.includes('小提琴经典曲集') ? titles : null
+    return titles.includes('钢琴经典曲集') ? titles : null
   }, 180_000, 'preset collection')
-  check('首次打开自动安装自带曲集', presetShelf.includes('小提琴经典曲集'), presetShelf.join(' / '))
+  check('首次打开自动安装自带曲集', presetShelf.includes('钢琴经典曲集'), presetShelf.join(' / '))
 
   const presetCard = await evaluate(`(() => {
     const card = [...document.querySelectorAll('[data-test="shelf-collection"]')]
-      .find(item => item.textContent.includes('小提琴经典曲集'))
+      .find(item => item.textContent.includes('钢琴经典曲集'))
     if (!card) return null
     return {
       id: card.dataset.collectionId,
@@ -1456,29 +1477,56 @@ try {
     presetScores.map(entry => `${entry.title} · ${entry.composer}`).join(' / ')
   )
 
-  // 双谱表的那首是小提琴加钢琴伴奏：默认只跟随上方旋律，不需要两只手一起演奏。
-  const minuet = presetScores.find(entry => entry.title === 'G 大调小步舞曲')
-  const presetHandMode = minuet === undefined
-    ? null
-    : await waitFor(() => evaluate(`(async () => {
-        const database = await new Promise((resolve, reject) => {
-          const request = indexedDB.open('noteflow')
-          request.onsuccess = () => resolve(request.result)
-          request.onerror = () => reject(request.error)
-        })
-        const value = await new Promise((resolve, reject) => {
-          const request = database.transaction('settings', 'readonly')
-            .objectStore('settings').get(${JSON.stringify(minuet.id)})
-          request.onsuccess = () => resolve(request.result ?? null)
-          request.onerror = () => reject(request.error)
-        })
-        database.close()
-        return value ? value.handMode : null
-      })()`), 10_000, 'preset settings').catch(() => null)
+  // 自带曲谱直接来自 MusicXML：没有页面图片，版面由 Verovio 现场排版。
   check(
-    '双谱表曲目默认只跟随上方旋律',
-    presetHandMode === 'right',
-    presetHandMode === null ? '没有保存声部设置' : presetHandMode
+    '自带曲谱是结构化 MusicXML',
+    presetScores.length === 4
+    && presetScores.every(entry => entry.scoreFormat === 'structured' && entry.pageCount === 0),
+    presetScores.map(entry => `${entry.title}:${entry.scoreFormat}/${entry.pageCount} 页`).join(' / ')
+  )
+
+  // 小提琴曲集与钢琴曲集分开安装，曲目是巴赫无伴奏组曲／奏鸣曲的乐章。
+  await open('/')
+  const violinShelf = await waitFor(async () => {
+    const titles = await evaluate(`[...document.querySelectorAll('[data-test="collection-title"]')]
+      .map(item => item.textContent.trim())`)
+    return titles.includes('小提琴经典曲集') ? titles : null
+  }, 180_000, 'violin preset collection')
+  check('首次打开自动安装小提琴曲集', violinShelf.includes('小提琴经典曲集'), violinShelf.join(' / '))
+
+  const violinCard = await evaluate(`(() => {
+    const card = [...document.querySelectorAll('[data-test="shelf-collection"]')]
+      .find(item => item.textContent.includes('小提琴经典曲集'))
+    if (!card) return null
+    return {
+      id: card.dataset.collectionId,
+      badge: card.querySelector('[data-test="collection-count"]')?.textContent?.trim() ?? '',
+      hasCover: Boolean(card.querySelector('[data-test="collection-cover"]'))
+    }
+  })()`)
+  check(
+    '小提琴曲集包含四首曲谱与封面',
+    violinCard !== null && violinCard.badge === '4 首' && violinCard.hasCover,
+    violinCard === null ? '未找到谱集卡' : `${violinCard.badge} · 封面${violinCard.hasCover ? '有' : '无'}`
+  )
+  await screenshot('preset-violin-collection.png')
+
+  await open(`/collections/${violinCard.id}`)
+  const violinDetail = await waitFor(async () => {
+    const value = await count('[data-test="collection-score"]')
+    return value === 4 ? value : null
+  }, 30_000, 'violin collection page')
+  check('小提琴曲集打开后有四项曲目', violinDetail === 4, `${violinDetail} 项`)
+  await screenshot('preset-violin-detail.png')
+
+  const violinLibrary = await readLibrary()
+  const violinScores = violinLibrary.scores.filter(entry => entry.collectionId === violinCard.id)
+  check(
+    '小提琴曲集是巴赫无伴奏 MusicXML',
+    violinScores.length === 4
+    && violinScores.every(entry => entry.scoreFormat === 'structured' && entry.pageCount === 0)
+    && violinScores.some(entry => entry.title === 'D 小调恰空' && entry.composer === '巴赫'),
+    violinScores.map(entry => `${entry.title} · ${entry.composer}`).join(' / ')
   )
 
   report = {
@@ -1511,6 +1559,10 @@ try {
     preset: {
       collection: presetCard?.id ?? null,
       scores: presetScores.map(entry => `${entry.title} · ${entry.composer}`)
+    },
+    presetViolin: {
+      collection: violinCard?.id ?? null,
+      scores: violinScores.map(entry => `${entry.title} · ${entry.composer}`)
     },
     elapsedMs: Date.now() - started,
     checks,

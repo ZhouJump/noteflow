@@ -81,7 +81,7 @@ function openSave(): void {
       back-label="返回导入"
     />
 
-    <div class="mx-auto grid max-w-2xl gap-4 px-4 pt-4">
+    <div class="mx-auto grid max-w-4xl gap-4 px-4 pt-4">
       <input
         ref="fileInput"
         type="file"
@@ -93,7 +93,7 @@ function openSave(): void {
       <button
         v-if="parsed === null"
         type="button"
-        class="grid aspect-4/3 place-items-center gap-2 border border-dashed border-default bg-elevated/30 px-6 text-center"
+        class="mx-auto grid aspect-4/3 w-full max-w-2xl place-items-center gap-2 border border-dashed border-default bg-elevated/30 px-6 text-center"
         @click="pickFile"
       >
         <UIcon

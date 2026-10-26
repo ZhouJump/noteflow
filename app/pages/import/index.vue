@@ -34,7 +34,7 @@ const entries = [
       back-label="返回谱架"
     />
 
-    <div class="mx-auto grid max-w-2xl gap-3 px-4 pt-4">
+    <div class="mx-auto grid max-w-4xl gap-3 px-4 pt-4">
       <NuxtLink
         v-for="entry in entries"
         :key="entry.title"
@@ -60,7 +60,7 @@ const entries = [
       </NuxtLink>
     </div>
 
-    <p class="mx-auto max-w-2xl px-4 pt-6 text-xs text-muted">
+    <p class="mx-auto max-w-4xl px-4 pt-6 text-xs text-muted">
       文件只在你的设备上处理，不会上传。
     </p>
   </div>

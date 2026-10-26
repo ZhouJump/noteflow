@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { handColor } from '~/lib/audio/practice'
 import { NOTE_ID_PREFIX } from '~/lib/musicxml/display'
+import { revealInViewport } from '~/lib/reveal'
 import { renderMusicXml, type RenderedScore } from '~/lib/verovio'
 
 /**
  * Verovio 渲染出的乐谱。渲染副本里的每个音符带 `nf-<序号>` id，点击元素即可把
  * 选择回传给页面；选中的音符只改填充色，不移动任何元素。跟随时每只手在目标
- * 音符上方画一个三角箭头（不同颜色），并把它滚到屏幕中间。
+ * 音符上方画一个三角箭头（不同颜色），目标跑出视口时才滚到屏幕中间。
  */
 const props = defineProps<{
   xml: string
@@ -101,7 +102,8 @@ function paint(): void {
   const key = targets.map(target => `${target.index}:${target.hand}`).join(',')
   if (followed === key) return
   followed = key
-  first.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  // 同一行内逐音推进时不重新居中，只保证目标还在视口里。
+  revealInViewport(first)
 }
 
 function onClick(event: MouseEvent): void {

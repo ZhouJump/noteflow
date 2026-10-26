@@ -22,9 +22,19 @@ logs
 /reference/homr/
 /reference/artifacts/
 
+# 本地评估数据集（Bach 独奏、MAPS 钢琴等）：体积大且音频有各自版权
+/reference/samples/*
+# 但 OMR 回归样本要继续入库
+!/reference/samples/input/
+!/reference/samples/expected/
+# 练习模式调优用的录音（四季·春 等）只留本机，OMR 回归只认图片
+/reference/samples/input/*.m4a
+/reference/samples/input/*.mp3
+/reference/samples/input/*.wav
+/reference/samples/input/*.flac
+
 # prepare-assets.mjs 生成的资产
 /public/models
-/public/samples
 /public/ort
 /public/verovio
 /public/pdf
