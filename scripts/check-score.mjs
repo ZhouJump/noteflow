@@ -1456,6 +1456,31 @@ try {
     presetScores.map(entry => `${entry.title} · ${entry.composer}`).join(' / ')
   )
 
+  // 双谱表的那首是小提琴加钢琴伴奏：默认只跟随上方旋律，不需要两只手一起演奏。
+  const minuet = presetScores.find(entry => entry.title === 'G 大调小步舞曲')
+  const presetHandMode = minuet === undefined
+    ? null
+    : await waitFor(() => evaluate(`(async () => {
+        const database = await new Promise((resolve, reject) => {
+          const request = indexedDB.open('noteflow')
+          request.onsuccess = () => resolve(request.result)
+          request.onerror = () => reject(request.error)
+        })
+        const value = await new Promise((resolve, reject) => {
+          const request = database.transaction('settings', 'readonly')
+            .objectStore('settings').get(${JSON.stringify(minuet.id)})
+          request.onsuccess = () => resolve(request.result ?? null)
+          request.onerror = () => reject(request.error)
+        })
+        database.close()
+        return value ? value.handMode : null
+      })()`), 10_000, 'preset settings').catch(() => null)
+  check(
+    '双谱表曲目默认只跟随上方旋律',
+    presetHandMode === 'right',
+    presetHandMode === null ? '没有保存声部设置' : presetHandMode
+  )
+
   report = {
     ok: true,
     base,
