@@ -1,0 +1,82 @@
+{
+  "version": 2,
+  "collection": {
+    "id": "preset-piano-classics",
+    "title": "钢琴经典曲集"
+  },
+  "cover": "cover.webp",
+  "scores": [
+    {
+      "id": "preset-piano-1",
+      "title": "G 大调小步舞曲",
+      "composer": "佩措尔德",
+      "note": "BWV Anh. 114",
+      "file": "preset-piano-1.musicxml",
+      "preview": "preset-piano-1.svg",
+      "notes": 209,
+      "measures": 32,
+      "staves": 2,
+      "pages": 1,
+      "time": {
+        "beats": 3,
+        "beatType": 4
+      },
+      "source": "https://raw.githubusercontent.com/musetrainer/library/master/scores/Bach_Minuet_in_G_Major_BWV_Anh._114.mxl",
+      "license": "Public Domain"
+    },
+    {
+      "id": "preset-piano-2",
+      "title": "致爱丽丝",
+      "composer": "贝多芬",
+      "note": "WoO 59",
+      "file": "preset-piano-2.musicxml",
+      "preview": "preset-piano-2.svg",
+      "notes": 1106,
+      "measures": 106,
+      "staves": 2,
+      "pages": 3,
+      "time": {
+        "beats": 3,
+        "beatType": 8
+      },
+      "source": "https://raw.githubusercontent.com/musetrainer/library/master/scores/Fur_Elise.mxl",
+      "license": "Public Domain"
+    },
+    {
+      "id": "preset-piano-3",
+      "title": "夜曲 Op.9 No.2",
+      "composer": "肖邦",
+      "note": "降 E 大调",
+      "file": "preset-piano-3.musicxml",
+      "preview": "preset-piano-3.svg",
+      "notes": 1259,
+      "measures": 38,
+      "staves": 2,
+      "pages": 4,
+      "time": {
+        "beats": 12,
+        "beatType": 8
+      },
+      "source": "https://raw.githubusercontent.com/musetrainer/library/master/scores/Chopin_-_Nocturne_Op_9_No_2_E_Flat_Major.mxl",
+      "license": "Public Domain"
+    },
+    {
+      "id": "preset-piano-4",
+      "title": "卡农",
+      "composer": "帕赫贝尔",
+      "note": "D 大调",
+      "file": "preset-piano-4.musicxml",
+      "preview": "preset-piano-4.svg",
+      "notes": 1603,
+      "measures": 102,
+      "staves": 2,
+      "pages": 4,
+      "time": {
+        "beats": 4,
+        "beatType": 4
+      },
+      "source": "https://raw.githubusercontent.com/musetrainer/library/master/scores/Canon_in_D.mxl",
+      "license": "Public Domain"
+    }
+  ]
+}
