@@ -291,6 +291,14 @@ onBeforeUnmount(() => {
         class="pr-2 text-xs text-muted tabular-nums"
         data-test="shelf-count"
       >{{ totalScores }} 首</span>
+      <UButton
+        to="https://blog.zhoujump.com/p/noteflow/"
+        target="_blank"
+        color="neutral"
+        variant="ghost"
+        size="sm"
+        label="关于"
+      />
     </PageHeader>
 
     <div class="mx-auto max-w-4xl px-4 pt-4">
